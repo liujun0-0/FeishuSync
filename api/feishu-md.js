@@ -830,7 +830,7 @@ function createBlock({
     block_id: id,
     parent_id: parentId,
     block_type: type,
-    children: children.length ? children : undefined,
+    children: Array.isArray(children) ? children : undefined,
   };
 
   if (key) {

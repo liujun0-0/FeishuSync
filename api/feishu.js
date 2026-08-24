@@ -139,13 +139,51 @@ export async function fetchAllBlocks(documentId, token) {
   return blocks;
 }
 
+const spaceIdCache = new Map();
+
+function isNumericSpaceId(value) {
+  return typeof value === 'string' && /^[0-9]+$/.test(value);
+}
+
+export async function resolveSpaceId(spaceId, token) {
+  if (spaceId === undefined || spaceId === null || spaceId === '') {
+    throw new Error('Missing spaceId.');
+  }
+  const raw = String(spaceId);
+  if (isNumericSpaceId(raw)) {
+    return raw;
+  }
+  const cached = spaceIdCache.get(raw);
+  if (cached) {
+    return cached;
+  }
+  // Feishu wiki v2 `/spaces/{int}/...` endpoints require an integer space_id.
+  // New-style knowledge spaces only expose a node token; resolve it via /get_node.
+  const data = await apiGet('/wiki/v2/spaces/get_node', token, { token: raw });
+  const node = data?.node || data;
+  const resolved =
+    node?.space_id ||
+    node?.origin_space_id ||
+    data?.space_id;
+  if (!resolved || !isNumericSpaceId(String(resolved))) {
+    throw new Error(
+      `Could not resolve space_id from token "${raw}". Got: ${JSON.stringify(
+        data
+      ).slice(0, 200)}`
+    );
+  }
+  spaceIdCache.set(raw, String(resolved));
+  return String(resolved);
+}
+
 export async function fetchWikiNodes(spaceId, token, parentNodeToken) {
   const nodes = [];
   let pageToken;
   let hasMore = true;
+  const resolvedSpaceId = await resolveSpaceId(spaceId, token);
 
   while (hasMore) {
-    const data = await apiGet(`/wiki/v2/spaces/${spaceId}/nodes`, token, {
+    const data = await apiGet(`/wiki/v2/spaces/${resolvedSpaceId}/nodes`, token, {
       parent_node_token: parentNodeToken,
       page_token: pageToken,
       page_size: 50,
@@ -173,7 +211,11 @@ export async function collectWikiDocNodes(spaceId, token, parentNodeToken, resul
     const objType = node.obj_type || node.objType;
     const objToken = node.obj_token || node.objToken;
 
-    if (objToken && (objType === 'docx' || objType === 'doc')) {
+    // Container nodes (folders) in Feishu wiki v2 also have obj_type=docx but
+    // they have has_child=true and no real content. Only collect leaf documents.
+    const isLeafDocument =
+      objToken && (objType === 'docx' || objType === 'doc') && !hasChild;
+    if (isLeafDocument) {
       result.push({
         nodeToken,
         documentId: objToken,
@@ -186,6 +228,66 @@ export async function collectWikiDocNodes(spaceId, token, parentNodeToken, resul
       await collectWikiDocNodes(spaceId, token, nodeToken, result);
     }
   }
+}
+
+// Walks the wiki tree once and returns a Map keyed by an array of path segments
+// from the wiki root, so callers can resolve a local subdirectory to a node_token.
+// Each value contains the title and the wiki node_token.
+export async function createWikiNode(spaceId, token, title, parentNodeToken) {
+  const resolvedSpaceId = await resolveSpaceId(spaceId, token);
+  const body = {
+    obj_type: 'docx',
+    node_type: 'origin',
+    title,
+  };
+  if (parentNodeToken) {
+    body.parent_node_token = parentNodeToken;
+  }
+  const data = await apiPost(
+    `/wiki/v2/spaces/${resolvedSpaceId}/nodes`,
+    token,
+    body
+  );
+  const node = data?.node || data;
+  if (!node?.node_token) {
+    throw new Error(
+      `Failed to create wiki node "${title}". Got: ${JSON.stringify(data).slice(0, 200)}`
+    );
+  }
+  return node;
+}
+
+export async function collectWikiNodePaths(spaceId, token) {
+  const byPath = new Map();
+
+  async function walk(parentNodeToken, segments) {
+    const nodes = await fetchWikiNodes(spaceId, token, parentNodeToken);
+    for (const node of nodes) {
+      const nodeToken = node.node_token || node.nodeToken;
+      const title = node.title || node.name || '';
+      const hasChild = node.has_child ?? node.hasChild;
+      const nextSegments = [...segments, title];
+      // In Feishu wiki v2, container (folder) nodes ALSO have obj_type=docx
+      // with has_child=true. Use has_child as the container signal.
+      // Record both with-root and without-root keys so callers can resolve
+      // local subdirectories either way.
+      if (hasChild) {
+        const full = nextSegments.join('/');
+        byPath.set(full, { title, nodeToken, parentNodeToken });
+        // Strip the leading wiki-root title (first segment).
+        if (nextSegments.length > 1) {
+          const trimmed = nextSegments.slice(1).join('/');
+          byPath.set(trimmed, { title, nodeToken, parentNodeToken });
+        }
+      }
+      if (hasChild && nodeToken) {
+        await walk(nodeToken, nextSegments);
+      }
+    }
+  }
+
+  await walk(undefined, []);
+  return byPath;
 }
 
 export async function fetchDocumentMeta(documentId, token) {
@@ -345,11 +447,16 @@ export async function createDocument(token, title) {
   }
 }
 
-export async function addDocToWiki(spaceId, token, documentId) {
-  await apiPost(`/wiki/v2/spaces/${spaceId}/nodes/move_docs_to_wiki`, token, {
+export async function addDocToWiki(spaceId, token, documentId, parentWikiToken) {
+  const resolvedSpaceId = await resolveSpaceId(spaceId, token);
+  const body = {
     obj_type: 'docx',
     obj_token: documentId,
-  });
+  };
+  if (parentWikiToken) {
+    body.parent_wiki_token = parentWikiToken;
+  }
+  await apiPost(`/wiki/v2/spaces/${resolvedSpaceId}/nodes/move_docs_to_wiki`, token, body);
 }
 
 async function fetchChildrenCount(documentId, token) {
@@ -401,7 +508,7 @@ export async function uploadMarkdownToDocument(documentId, token, markdown) {
   await appendBlocksWithTables(documentId, token, blocks);
 }
 
-export async function createDocumentFromMarkdown(spaceId, token, markdown) {
+export async function createDocumentFromMarkdown(spaceId, token, markdown, parentWikiToken) {
   const { title, blocks } = markdownToBlocks(markdown);
   const { documentId, usedTitle } = await createDocument(token, title);
 
@@ -419,7 +526,7 @@ export async function createDocumentFromMarkdown(spaceId, token, markdown) {
       ];
 
   await appendBlocksWithTables(documentId, token, contentBlocks);
-  await addDocToWiki(spaceId, token, documentId);
+  await addDocToWiki(spaceId, token, documentId, parentWikiToken);
   return documentId;
 }
 

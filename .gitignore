@@ -3,7 +3,7 @@ AGENTS.md
 agent_docs/
 user-token.txt
 config.json
-wikid/
+# wikid/   # temporarily tracked for restructuring experiment (2026-08-24)
 # Logs
 logs
 *.log

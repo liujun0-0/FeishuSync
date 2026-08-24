@@ -1,0 +1,167 @@
+{
+  "spaceId": "LpE9wkat3iLFtXku61Hcv4DqnEd",
+  "updatedAt": "2026-08-24T04:41:10.545Z",
+  "docs": {
+    "IbTYdu72WoseNAxKv8zcxM5vnbf": {
+      "file": "java面试知识.md",
+      "revisionId": 2,
+      "title": "java面试知识",
+      "fileType": "docx",
+      "hash": "e178fd79ea466dd65ca014560fbda32485e96f0244cb8cf7b78cb91bfefc9e17"
+    },
+    "XXWfdPIwUob2MgxhnqbcYukSnMe": {
+      "file": "测试文档.md",
+      "revisionId": 4,
+      "title": "测试文档",
+      "fileType": "docx",
+      "hash": "c11b695a2f98708738a0799d02c8d44fb9c2200c47145e030ebc59db81c6d4cb"
+    },
+    "NvFcdK6luoMz1cxvucPcspl4nVd": {
+      "file": "RAG-的演变和架构.md",
+      "revisionId": 203,
+      "title": "RAG 的演变和架构",
+      "fileType": "docx",
+      "hash": "01a920a488bad9c66bdce9b4ead824b50d2bdb2225020f1ee2afca442e477846"
+    },
+    "SKAcdZzykoEvP1xD0Tucdxq9ndh": {
+      "file": "AI-辅助开发实践-问题、解法、搭建与规范.md",
+      "revisionId": 26,
+      "title": "AI 辅助开发实践：问题、解法、搭建与规范",
+      "fileType": "docx",
+      "hash": "ef011b9f2fd4465e14fc62f5910a97fa32a5731a2edbf270d4d0ba0533a72d3d"
+    },
+    "CYyyd8ZU9ohgaNxabvmccCRVngd": {
+      "file": "CTWA行业版产品设计方案.md",
+      "revisionId": 65,
+      "title": "CTWA行业版产品设计方案",
+      "fileType": "docx",
+      "hash": "a0333ca5535a143331231fdf5603f45e88f4c3aa09f8cdd46bf3a6dac4b62bae"
+    },
+    "ZAOKdMZyZordVUx9drMc0jeJnrf": {
+      "file": "#7025456090#客服分配优化-待分配会话重新分配&客服离线提醒.md",
+      "revisionId": 16,
+      "title": "#7025456090#客服分配优化：待分配会话重新分配&客服离线提醒",
+      "fileType": "docx",
+      "hash": "254c82a75c1275e45e6e7519fea9e1f91e61b7c0d9e801de1f983574fd062428"
+    },
+    "C5KwdSNOzojPT2xPTwZcXiJBnwf": {
+      "file": "客户工作台订单号取值优化.md",
+      "revisionId": 10,
+      "title": "客户工作台订单号取值优化",
+      "fileType": "docx",
+      "hash": "dcdda45e1dae77e5e8497e53c5f12a4b903e952b50b907472ffdd0422b107dd9"
+    },
+    "LLywdVFhxo5P24xIYTuc0RIOnfg": {
+      "file": "CTWA-转化事件回传-—-技术设计方案.md",
+      "revisionId": 21,
+      "title": "CTWA 转化事件回传 — 技术设计方案",
+      "fileType": "docx",
+      "hash": "d02c0285b15f6fb64b76cf57febe6f32934b6dd7e566a2a9928f5bf94ad19be3"
+    },
+    "K1BWdj0PSo1yl0xdCYjc18cvnFg": {
+      "file": "客户营销属性管理.md",
+      "revisionId": 34,
+      "title": "客户营销属性管理",
+      "fileType": "docx",
+      "hash": "fc866ec5d6693e27203e76e6aa82c8f8a73aa677b6ed908c7f2420f463ec4f06"
+    },
+    "PJkTdS9c9o0Oi8xT4UVcvSMTntc": {
+      "file": "测试新建文档-子目录验证.md",
+      "revisionId": 4,
+      "title": "测试新建文档-子目录验证",
+      "fileType": "docx",
+      "hash": "e500b9780ce8193c2ace27c6390e651736d00b3bca7ab488c6cf08c2234f173f"
+    },
+    "RIe8d5C5voFwngxaG8FcL03hnng": {
+      "file": "WhatsApp-Direct-Send-API-功能使用与接入调研.md",
+      "revisionId": 134,
+      "title": "WhatsApp Direct Send API 功能使用与接入调研",
+      "fileType": "docx",
+      "hash": "b42a873d464ce8f90dc88c400a7949b350900cd7aceb4a7e7801088b82eebef4"
+    },
+    "Mtv9d6TKDovhWpxbNufcw8phnkf": {
+      "file": "WhatsApp-Direct-Send-API-功能使用与接入调研-副本.md",
+      "revisionId": 1,
+      "title": "WhatsApp Direct Send API 功能使用与接入调研 副本",
+      "fileType": "docx",
+      "hash": "5fdc7964a4eb29940e41513ddcc86d12aae3001867aee71edac069d7af851d23"
+    },
+    "DfkZd2veLovZnsxaHQic0KLtnLh": {
+      "file": "测试文档-1.md",
+      "revisionId": 9,
+      "title": "测试文档",
+      "fileType": "docx",
+      "hash": "c11b695a2f98708738a0799d02c8d44fb9c2200c47145e030ebc59db81c6d4cb"
+    },
+    "NWxrd2J6RoXSwoxPou1c4tJUn4g": {
+      "file": "Meta-API-文档.md",
+      "revisionId": 191,
+      "title": "Meta API 文档",
+      "fileType": "docx",
+      "hash": "f0217a72347dcdb0fa377892c76c67fb740c28455d406ee2988d65ccee206102"
+    },
+    "L1T1dGbFpoSa8RxRTLfcT8NjnYc": {
+      "file": "WhatsApp-入站事件类型扩展设计方案(以-Flow-Webhook-为例).md",
+      "revisionId": 14,
+      "title": "WhatsApp 入站事件类型扩展设计方案（以 Flow Webhook 为例）",
+      "fileType": "docx",
+      "hash": "3a69caca6915c37c2797e096eaff1d699690850da8f5d69e18ee45fe7b0a29b8"
+    },
+    "ODAAdJs3Ro0zVNxjzR7cdUJmnte": {
+      "file": "客服分配优化-—-团队版.md",
+      "revisionId": 3,
+      "title": "客服分配优化 — 团队版",
+      "fileType": "docx",
+      "hash": "02062b8054952e347e348c89961d4c92ece977a94b48bf506fa473ba37657aaf"
+    },
+    "WXmxdf5wXofxk6xr9lucOdy1nhe": {
+      "file": "后端国际化(i18n)技术方案.md",
+      "revisionId": 98,
+      "title": "后端国际化（i18n）技术方案",
+      "fileType": "docx",
+      "hash": "4709a938d4c7c49803a5595f442923fd19afadd8e08a1a400586ae8c90cc3f38"
+    },
+    "TaFPdc7vholVRdx8EPucMJ58nGI": {
+      "file": "客户工作台订单号取值优化-1.md",
+      "revisionId": 43,
+      "title": "客户工作台订单号取值优化",
+      "fileType": "docx",
+      "hash": "52604bb9b80669e8ad0a81e0dd4973e6106d0c906105f7d9b8a56c23c23c5353"
+    },
+    "PBxcdMajgo8vOtxEnhEcvOWjnHz": {
+      "file": "CTWA-行业版-—-团队版.md",
+      "revisionId": 420,
+      "title": "CTWA 行业版 — 团队版",
+      "fileType": "docx",
+      "hash": "66c1018c8da49aada7a7ea5029c4d93347d1810646daa997272e3dc3ee3ac493"
+    },
+    "RnRBdeGsao50hUxsxeDcR7BtnRf": {
+      "file": "后端国际化(彻底重排版)-团队版.md",
+      "revisionId": 69,
+      "title": "后端国际化（彻底重排版）-团队版",
+      "fileType": "docx",
+      "hash": "419d82254fcce3e737edeeaf35039d1033a64bc660fc900c86b18968aca5b852"
+    },
+    "JPNTd48BYo32PnxPRXHc4mWfnTe": {
+      "file": "客户营销属性管理(团队版).md",
+      "revisionId": 381,
+      "title": "客户营销属性管理（团队版）",
+      "fileType": "docx",
+      "hash": "d75dfd9b1186827c45b17cbacfa2649a812fa53db2aac90538a592f55b7161f3"
+    },
+    "Hh2qd50rtoe1oox6IsycXe3Bnhh": {
+      "file": "新建子目录自动建容器测试.md",
+      "revisionId": 4,
+      "title": "新建子目录自动建容器测试",
+      "fileType": "docx",
+      "hash": "6282cc99a7697076ecb535893cbfe77c46e2be89c0b1cf23dd26e5f03cec1a94"
+    },
+    "ZopadzqoGo6a9txyEwEcTMTBnBc": {
+      "file": "嵌套子目录测试.md",
+      "revisionId": 4,
+      "title": "嵌套子目录测试",
+      "fileType": "docx",
+      "hash": "7933918450b4b6b806b643beb648c53fd231b1f24f0756541ed05801a6765d9a"
+    }
+  }
+}

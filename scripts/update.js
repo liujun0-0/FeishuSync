@@ -15,6 +15,8 @@ import {
 import {
   deleteRemoteDocument,
   collectWikiDocNodes,
+  collectWikiNodePaths,
+  createWikiNode,
   fetchDocumentMeta,
   downloadDocumentToFile,
   uploadMarkdownToDocument,
@@ -40,6 +42,38 @@ function expandHomeDir(inputPath) {
 
 function isMarkdownFile(entry) {
   return entry.toLowerCase().endsWith('.md');
+}
+
+// Resolve a local subdirectory (array of title segments) to a wiki node_token.
+// Any missing prefix in the wiki is created on the fly as a container node,
+// so that a brand-new local folder "A/B/C" yields a corresponding wiki path.
+async function ensureParentPath(spaceId, token, segs, wikiPathIndex) {
+  let currentParent = null;
+  let accumulated = [];
+  for (const title of segs) {
+    accumulated.push(title);
+    const candidate = accumulated.join('/');
+    let hit = wikiPathIndex.get(candidate);
+    if (!hit) {
+      try {
+        const node = await createWikiNode(spaceId, token, title, currentParent);
+        hit = { title, nodeToken: node.node_token, parentNodeToken: currentParent };
+        // Record both key shapes so subsequent lookups in this run hit the cache.
+        wikiPathIndex.set(candidate, hit);
+        if (accumulated.length > 1) {
+          wikiPathIndex.set(accumulated.slice(1).join('/'), hit);
+        }
+        console.log(`[upload] created wiki container "${candidate}"`);
+      } catch (err) {
+        console.error(
+          `[upload] failed to create wiki container "${candidate}": ${err.message || err}`
+        );
+        return null;
+      }
+    }
+    currentParent = hit.nodeToken;
+  }
+  return currentParent;
 }
 
 async function listMarkdownFiles(rootDir, manifestName) {
@@ -116,6 +150,11 @@ async function main() {
       fileType: node.objType || 'docx',
     });
   }
+
+  // Build a map of wiki-node paths so we can resolve local subdirectories
+  // (e.g. "飞书深诺技术文档/飞书深诺产品文档") to the right parent node_token
+  // when uploading new local files.
+  const wikiPathIndex = await collectWikiNodePaths(spaceId, token);
 
   const remoteMap = new Map(remoteDocs.map((doc) => [doc.documentId, doc]));
   const usedPaths = new Set(localFiles.map((file) => file.relPath));
@@ -298,7 +337,30 @@ async function main() {
   for (const [fileRel, localInfo] of localMap.entries()) {
     if (fileToDoc.has(fileRel)) continue;
     const markdown = await fs.readFile(localInfo.fullPath, 'utf8');
-    const newDocId = await createDocumentFromMarkdown(spaceId, token, markdown);
+
+    // Resolve parent wiki node from the file's local subdirectory.
+    // fileRel looks like "飞书深诺技术文档/飞书深诺产品文档/new.md" or just "new.md".
+    // The parent path segments (everything except the basename) are looked up
+    // in the wiki path index by title sequence. If any prefix doesn't exist
+    // in the wiki, we create it as a new container node on the fly.
+    const segs = fileRel.split('/');
+    segs.pop(); // drop filename
+    let parentWikiToken;
+    if (segs.length > 0) {
+      parentWikiToken = await ensureParentPath(spaceId, token, segs, wikiPathIndex);
+      if (!parentWikiToken) {
+        console.warn(
+          `[upload] could not resolve parent for local subdirectory "${segs.join('/')}"; uploading to root`
+        );
+      }
+    }
+
+    const newDocId = await createDocumentFromMarkdown(
+      spaceId,
+      token,
+      markdown,
+      parentWikiToken
+    );
     const meta = await fetchDocumentMeta(newDocId, token);
     manifestDocs[newDocId] = {
       file: fileRel,
