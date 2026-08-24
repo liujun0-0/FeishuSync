@@ -22,7 +22,7 @@ import {
   downloadDocumentToFile,
   uploadMarkdownToDocument,
   createDocumentFromMarkdown,
-  moveDocumentToWiki,
+  moveWikiNode,
 } from '../api/feishu.js';
 
 if (typeof fetch !== 'function') {
@@ -199,6 +199,7 @@ async function main() {
       ? `${doc.parentPath}/${baseName}.md`
       : `${baseName}.md`;
     let fileRel = existing?.file;
+    let localMoved = false;
 
     // --- Local move detection (user moved the file locally) ------------
     // If the manifest entry points to a path that is no longer on disk, but
@@ -212,6 +213,7 @@ async function main() {
         for (const [relPath, li] of localMap.entries()) {
           if (relPath !== fileRel && li.hash === existing.hash) {
             fileRel = relPath;
+            localMoved = true;
             const localDir = path.posix.dirname(fileRel);
             const localDirNorm = localDir === '.' ? '' : localDir;
             const remoteDir = doc.parentPath || '';
@@ -227,7 +229,7 @@ async function main() {
               }
               if (parentToken !== null) {
                 try {
-                  await moveDocumentToWiki(spaceId, token, doc.documentId, parentToken);
+                  await moveWikiNode(spaceId, token, doc.nodeToken, parentToken);
                   console.log(`[move] ${doc.title} -> ${localDirNorm || '<wiki root>'}`);
                   movedRemote += 1;
                 } catch (err) {
@@ -242,15 +244,20 @@ async function main() {
     }
 
     // --- Follow-Feishu rename (remote moved / title changed) ------------
-    const renameCandidates = new Set(usedPaths);
-    if (fileRel) {
-      renameCandidates.delete(fileRel);
+    // Skip when the local move detection already picked a target: the user
+    // moved the file locally, so honoring Feishu's position would undo it.
+    let desiredRel = null;
+    if (!localMoved) {
+      const renameCandidates = new Set(usedPaths);
+      if (fileRel) {
+        renameCandidates.delete(fileRel);
+      }
+      desiredRel = await ensureUniqueFilePath(
+        resolvedFolder,
+        desiredRelative,
+        renameCandidates
+      );
     }
-    const desiredRel = await ensureUniqueFilePath(
-      resolvedFolder,
-      desiredRelative,
-      renameCandidates
-    );
     if (!fileRel) {
       fileRel = desiredRel;
     } else if (desiredRel && desiredRel !== fileRel) {

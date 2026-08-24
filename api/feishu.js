@@ -104,6 +104,10 @@ export function apiDelete(pathSuffix, token, body, query) {
   return apiRequest('DELETE', pathSuffix, token, { query, body });
 }
 
+export function apiPatch(pathSuffix, token, body, query) {
+  return apiRequest('PATCH', pathSuffix, token, { query, body });
+}
+
 export async function deleteRemoteDocument(documentId, token, fileType) {
   const type = fileType || 'docx';
   await apiDelete(`/drive/v1/files/${documentId}`, token, undefined, { type });
@@ -459,10 +463,23 @@ export async function addDocToWiki(spaceId, token, documentId, parentWikiToken) 
   await apiPost(`/wiki/v2/spaces/${resolvedSpaceId}/nodes/move_docs_to_wiki`, token, body);
 }
 
-// Move an existing document (already in the wiki) to a different parent
-// container. Same API call as addDocToWiki but the doc must already be in
-// the wiki — passing parent_wiki_token moves it within the same space.
-export const moveDocumentToWiki = addDocToWiki;
+// Move an existing wiki NODE (already in the wiki tree) to a different parent
+// container. The correct endpoint for wiki-internal moves is
+// POST /wiki/v2/spaces/{space_id}/nodes/{node_token}/move with
+// target_parent_token — move_docs_to_wiki only works for docs NOT yet in the
+// wiki.
+export async function moveWikiNode(spaceId, token, nodeToken, parentNodeToken) {
+  const resolvedSpaceId = await resolveSpaceId(spaceId, token);
+  if (!nodeToken) {
+    throw new Error('moveWikiNode requires node_token');
+  }
+  const body = { target_parent_token: parentNodeToken || undefined };
+  await apiPost(
+    `/wiki/v2/spaces/${resolvedSpaceId}/nodes/${nodeToken}/move`,
+    token,
+    body
+  );
+}
 
 async function fetchChildrenCount(documentId, token) {
   let count = 0;
