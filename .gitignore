@@ -4,6 +4,10 @@ agent_docs/
 user-token.txt
 config.json
 wikid/
+wikid-backup/
+.feishu-sync-refresh-token
+.feishu-sync-watchdog.pid
+*.pid
 # Logs
 logs
 *.log

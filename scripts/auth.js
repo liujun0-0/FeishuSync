@@ -1,13 +1,21 @@
 import http from 'node:http';
 import { URL } from 'node:url';
+import path from 'node:path';
 import fs from 'node:fs/promises';
 import { exec } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { readConfig, requireConfigValue, resolvePath } from '../config.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT = 7777;
 const REDIRECT_URI = `http://localhost:${PORT}/callback`;
 const AUTH_URL = 'https://accounts.feishu.cn/open-apis/authen/v1/authorize';
 const TOKEN_URL = 'https://open.feishu.cn/open-apis/authen/v2/oauth/token';
+
+// Persisted refresh token so that after a reboot / process restart the
+// token can be renewed automatically without a new browser authorization.
+const REFRESH_TOKEN_FILE = path.join(__dirname, '..', '.feishu-sync-refresh-token');
 
 let pendingCodeResolve = null;
 let shuttingDown = false;
@@ -158,6 +166,21 @@ async function writeTokenFile(tokenPath, accessToken) {
   await fs.writeFile(tokenPath, `${accessToken}\n`, 'utf8');
 }
 
+async function readRefreshTokenFile() {
+  try {
+    const raw = await fs.readFile(REFRESH_TOKEN_FILE, 'utf8');
+    const value = raw.trim();
+    return value || null;
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+async function writeRefreshTokenFile(refreshToken) {
+  await fs.writeFile(REFRESH_TOKEN_FILE, `${refreshToken}\n`, 'utf8');
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -190,7 +213,10 @@ async function main() {
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-  let refreshToken = null;
+  // On startup, try to load a previously persisted refresh token so the
+  // process can renew the access token automatically after a reboot,
+  // without requiring a new browser authorization.
+  let refreshToken = await readRefreshTokenFile();
 
   while (true) {
     if (shuttingDown) break;
@@ -223,6 +249,9 @@ async function main() {
       await writeTokenFile(tokenPath, tokenData.access_token);
 
       refreshToken = tokenData.refresh_token || null;
+      if (refreshToken) {
+        await writeRefreshTokenFile(refreshToken);
+      }
 
       const expiresIn = Number(tokenData.expires_in || 0);
       const threshold = Math.max(Math.ceil(expiresIn * 0.2), 30);

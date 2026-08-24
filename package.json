@@ -17,6 +17,7 @@
     "list": "node scripts/list.js",
     "update": "node scripts/update.js",
     "sync": "node scripts/sync.js",
+    "watchdog": "node scripts/watchdog.js",
     "start": "node index.js start",
     "stop": "node index.js stop"
   }

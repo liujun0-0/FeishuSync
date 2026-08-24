@@ -100,6 +100,19 @@ async function start() {
 }
 
 async function stop() {
+  // If the watchdog is running, stopping it first makes it terminate its
+  // children (auth & sync) cleanly; otherwise it would restart them right
+  // after we kill them below.
+  const watchdogPid = await readPid(path.join(__dirname, '.feishu-sync-watchdog.pid'));
+  if (watchdogPid && isProcessAlive(watchdogPid)) {
+    try {
+      process.kill(watchdogPid, 'SIGTERM');
+      console.log(`[stop] watchdog stopped (pid ${watchdogPid})`);
+    } catch (err) {
+      console.warn(`[stop] failed to stop watchdog (pid ${watchdogPid}): ${err.message || err}`);
+    }
+  }
+
   const authPid = await readPid(AUTH_PID);
   const syncPid = await readPid(SYNC_PID);
 
