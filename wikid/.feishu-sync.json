@@ -1,6 +1,6 @@
 {
   "spaceId": "LpE9wkat3iLFtXku61Hcv4DqnEd",
-  "updatedAt": "2026-08-24T05:08:11.766Z",
+  "updatedAt": "2026-08-24T05:12:04.436Z",
   "docs": {
     "IbTYdu72WoseNAxKv8zcxM5vnbf": {
       "file": "java面试知识.md",
@@ -57,13 +57,6 @@
       "title": "CTWA 转化事件回传 — 技术设计方案",
       "fileType": "docx",
       "hash": "d02c0285b15f6fb64b76cf57febe6f32934b6dd7e566a2a9928f5bf94ad19be3"
-    },
-    "K1BWdj0PSo1yl0xdCYjc18cvnFg": {
-      "file": "飞书深诺文档集合/飞书深诺产品文档/客户营销属性管理.md",
-      "revisionId": 34,
-      "title": "客户营销属性管理",
-      "fileType": "docx",
-      "hash": "fc866ec5d6693e27203e76e6aa82c8f8a73aa677b6ed908c7f2420f463ec4f06"
     },
     "PJkTdS9c9o0Oi8xT4UVcvSMTntc": {
       "file": "飞书深诺文档集合/飞书深诺产品文档/测试新建文档-子目录验证.md",
@@ -176,6 +169,13 @@
       "title": "实验B-飞书侧新建测试",
       "fileType": "docx",
       "hash": "18c083f2f4508218d77654df07f6b86b435d8a2e3c5c85d71491292fd71e87bd"
+    },
+    "FQs1dVwHEoh7Taxzw9ycDaq2nze": {
+      "file": "飞书深诺文档集合/飞书深诺技术文档/客户营销属性管理.md",
+      "revisionId": 20,
+      "title": "客户营销属性管理",
+      "fileType": "docx",
+      "hash": "fc866ec5d6693e27203e76e6aa82c8f8a73aa677b6ed908c7f2420f463ec4f06"
     }
   }
 }

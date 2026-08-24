@@ -199,6 +199,49 @@ async function main() {
       ? `${doc.parentPath}/${baseName}.md`
       : `${baseName}.md`;
     let fileRel = existing?.file;
+
+    // --- Local move detection (user moved the file locally) ------------
+    // If the manifest entry points to a path that is no longer on disk, but
+    // a file with the SAME hash exists at a different relative path, the
+    // user moved/renamed the local file. Honor the local layout: point the
+    // manifest at the actual file and mirror the move to Feishu (so the
+    // remote doc lands in the container matching the new subdirectory).
+    if (existing?.hash && fileRel) {
+      const oldOnDisk = localMap.has(fileRel);
+      if (!oldOnDisk) {
+        for (const [relPath, li] of localMap.entries()) {
+          if (relPath !== fileRel && li.hash === existing.hash) {
+            fileRel = relPath;
+            const localDir = path.posix.dirname(fileRel);
+            const localDirNorm = localDir === '.' ? '' : localDir;
+            const remoteDir = doc.parentPath || '';
+            if (doc.nodeToken && localDirNorm !== remoteDir) {
+              let parentToken = null;
+              if (localDirNorm) {
+                parentToken = await ensureParentPath(
+                  spaceId,
+                  token,
+                  localDirNorm.split('/'),
+                  wikiPathIndex
+                );
+              }
+              if (parentToken !== null) {
+                try {
+                  await moveDocumentToWiki(spaceId, token, doc.documentId, parentToken);
+                  console.log(`[move] ${doc.title} -> ${localDirNorm || '<wiki root>'}`);
+                  movedRemote += 1;
+                } catch (err) {
+                  console.error(`[move] failed for ${doc.title}: ${err.message || err}`);
+                }
+              }
+            }
+            break;
+          }
+        }
+      }
+    }
+
+    // --- Follow-Feishu rename (remote moved / title changed) ------------
     const renameCandidates = new Set(usedPaths);
     if (fileRel) {
       renameCandidates.delete(fileRel);
@@ -216,9 +259,16 @@ async function main() {
       const oldAbs = path.join(resolvedFolder, oldRel);
       const newAbs = path.join(resolvedFolder, desiredRel);
       if (oldInfo) {
-        try { await fs.rename(oldAbs, newAbs); } catch {}
-        localMap.delete(oldRel);
-        localMap.set(desiredRel, { ...oldInfo, relPath: desiredRel, fullPath: newAbs });
+        await fs.mkdir(path.dirname(newAbs), { recursive: true });
+        let renamed = false;
+        try {
+          await fs.rename(oldAbs, newAbs);
+          renamed = true;
+        } catch {}
+        if (renamed) {
+          localMap.delete(oldRel);
+          localMap.set(desiredRel, { ...oldInfo, relPath: desiredRel, fullPath: newAbs });
+        }
       }
       usedPaths.delete(oldRel);
       usedPaths.add(desiredRel);
@@ -323,31 +373,6 @@ async function main() {
       };
       uploaded += 1;
       continue;
-    }
-
-    // Local file moved to a different subdirectory but hash/revision are
-    // unchanged. Mirror the move to Feishu so the doc ends up in the right
-    // container. We compare the local subdirectory with the doc's wiki
-    // parent path; if they differ, call move_docs_to_wiki.
-    if (!localChanged && !remoteChanged) {
-      const localDir = path.posix.dirname(fileRel);
-      const remoteDir = doc.parentPath || '';
-      if (localDir !== remoteDir && doc.nodeToken) {
-        let parentToken = null;
-        if (localDir) {
-          const segs = localDir.split('/');
-          parentToken = await ensureParentPath(spaceId, token, segs, wikiPathIndex);
-        }
-        if (parentToken !== null) {
-          try {
-            await moveDocumentToWiki(spaceId, token, doc.documentId, parentToken);
-            console.log(`[move] ${doc.title} -> ${localDir || '<wiki root>'}`);
-            movedRemote += 1;
-          } catch (err) {
-            console.error(`[move] failed for ${doc.title}: ${err.message || err}`);
-          }
-        }
-      }
     }
 
     manifestDocs[doc.documentId] = {
