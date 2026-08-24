@@ -18,9 +18,11 @@ import {
   collectWikiNodePaths,
   createWikiNode,
   fetchDocumentMeta,
+  fetchWikiNodes,
   downloadDocumentToFile,
   uploadMarkdownToDocument,
   createDocumentFromMarkdown,
+  moveDocumentToWiki,
 } from '../api/feishu.js';
 
 if (typeof fetch !== 'function') {
@@ -139,6 +141,21 @@ async function main() {
   const wikiDocs = [];
   await collectWikiDocNodes(spaceId, token, undefined, wikiDocs);
 
+  // Build a parentPath lookup keyed by obj_token (documentId). We'll use it
+  // when downloading new remote docs to mirror their wiki subdirectory
+  // structure locally instead of dumping everything at the root.
+  const wikiTree = await collectWikiNodePaths(spaceId, token);
+  const parentPathByObjToken = new Map();
+  async function indexPaths(parentNodeToken, segments) {
+    const children = await fetchWikiNodes(spaceId, token, parentNodeToken);
+    for (const c of children) {
+      const next = [...segments, c.title || ''];
+      parentPathByObjToken.set(c.obj_token, next.slice(0, -1).join('/'));
+      if (c.has_child) await indexPaths(c.node_token, next);
+    }
+  }
+  await indexPaths(undefined, []);
+
   const remoteDocs = [];
   for (const node of wikiDocs) {
     const meta = await fetchDocumentMeta(node.documentId, token);
@@ -146,6 +163,7 @@ async function main() {
       documentId: node.documentId,
       nodeToken: node.nodeToken,
       title: meta.title || node.title || '',
+      parentPath: parentPathByObjToken.get(node.documentId) || '',
       revisionId: meta.revision_id ?? meta.revisionId ?? null,
       fileType: node.objType || 'docx',
     });
@@ -170,11 +188,16 @@ async function main() {
   let skipped = 0;
   let deletedLocal = 0;
   let deletedRemote = 0;
+  let movedRemote = 0;
 
   for (const doc of remoteDocs) {
     const existing = manifestDocs[doc.documentId];
     const baseName = sanitizeFilename(doc.title) || doc.documentId;
-    const desiredName = `${baseName}.md`;
+    // Build the desired relative path: include the wiki parent path so the
+    // local file ends up in a subdirectory mirroring the Feishu tree.
+    const desiredRelative = doc.parentPath
+      ? `${doc.parentPath}/${baseName}.md`
+      : `${baseName}.md`;
     let fileRel = existing?.file;
     const renameCandidates = new Set(usedPaths);
     if (fileRel) {
@@ -182,7 +205,7 @@ async function main() {
     }
     const desiredRel = await ensureUniqueFilePath(
       resolvedFolder,
-      desiredName,
+      desiredRelative,
       renameCandidates
     );
     if (!fileRel) {
@@ -193,7 +216,7 @@ async function main() {
       const oldAbs = path.join(resolvedFolder, oldRel);
       const newAbs = path.join(resolvedFolder, desiredRel);
       if (oldInfo) {
-        await fs.rename(oldAbs, newAbs);
+        try { await fs.rename(oldAbs, newAbs); } catch {}
         localMap.delete(oldRel);
         localMap.set(desiredRel, { ...oldInfo, relPath: desiredRel, fullPath: newAbs });
       }
@@ -302,6 +325,31 @@ async function main() {
       continue;
     }
 
+    // Local file moved to a different subdirectory but hash/revision are
+    // unchanged. Mirror the move to Feishu so the doc ends up in the right
+    // container. We compare the local subdirectory with the doc's wiki
+    // parent path; if they differ, call move_docs_to_wiki.
+    if (!localChanged && !remoteChanged) {
+      const localDir = path.posix.dirname(fileRel);
+      const remoteDir = doc.parentPath || '';
+      if (localDir !== remoteDir && doc.nodeToken) {
+        let parentToken = null;
+        if (localDir) {
+          const segs = localDir.split('/');
+          parentToken = await ensureParentPath(spaceId, token, segs, wikiPathIndex);
+        }
+        if (parentToken !== null) {
+          try {
+            await moveDocumentToWiki(spaceId, token, doc.documentId, parentToken);
+            console.log(`[move] ${doc.title} -> ${localDir || '<wiki root>'}`);
+            movedRemote += 1;
+          } catch (err) {
+            console.error(`[move] failed for ${doc.title}: ${err.message || err}`);
+          }
+        }
+      }
+    }
+
     manifestDocs[doc.documentId] = {
       ...existing,
       file: fileRel,
@@ -375,7 +423,7 @@ async function main() {
   await writeManifest(resolvedFolder, { spaceId, docs: manifestDocs }, manifestName);
 
   console.log(
-    `Sync complete. Downloaded: ${downloaded}, Uploaded: ${uploaded}, Deleted Local: ${deletedLocal}, Deleted Remote: ${deletedRemote}, Conflicts: ${conflicts}, Skipped: ${skipped}`
+    `Sync complete. Downloaded: ${downloaded}, Uploaded: ${uploaded}, Moved Remote: ${movedRemote}, Deleted Local: ${deletedLocal}, Deleted Remote: ${deletedRemote}, Conflicts: ${conflicts}, Skipped: ${skipped}`
   );
 }
 

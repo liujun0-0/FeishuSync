@@ -459,6 +459,11 @@ export async function addDocToWiki(spaceId, token, documentId, parentWikiToken) 
   await apiPost(`/wiki/v2/spaces/${resolvedSpaceId}/nodes/move_docs_to_wiki`, token, body);
 }
 
+// Move an existing document (already in the wiki) to a different parent
+// container. Same API call as addDocToWiki but the doc must already be in
+// the wiki — passing parent_wiki_token moves it within the same space.
+export const moveDocumentToWiki = addDocToWiki;
+
 async function fetchChildrenCount(documentId, token) {
   let count = 0;
   let pageToken;
