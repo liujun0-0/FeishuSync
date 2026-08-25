@@ -239,7 +239,7 @@ async function main() {
   // be configured for long-connection events; if it isn't, edit events
   // never reach this process. Every 5 minutes, run update.js to compare
   // each doc's revisionId against the manifest and pull any changes.
-  const REV_CHECK_MS = 5 * 60 * 1000;
+  const REV_CHECK_MS = 60 * 1000;
   setInterval(() => {
     runFullSyncGuarded('revision-check').catch((err) => {
       console.error(`[realtime-sync] revision check failed: ${err.message || err}`);
