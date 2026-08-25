@@ -157,6 +157,23 @@ async function main() {
     }
   };
 
+  // Guard against concurrent full syncs: a websocket edit event AND the
+  // 5-minute revision fallback may fire at the same time, and update.js
+  // mutates the manifest — two concurrent runs would race.
+  let updateRunning = false;
+  const runFullSyncGuarded = async (reason) => {
+    if (updateRunning) {
+      console.log(`[realtime-sync] update already running; skip (${reason})`);
+      return;
+    }
+    updateRunning = true;
+    try {
+      await runFullSync(reason);
+    } finally {
+      updateRunning = false;
+    }
+  };
+
   const pollForNewDocs = async () => {
     ignoreLocalChanges = true;
     try {
@@ -205,7 +222,7 @@ async function main() {
     dedupeWindowMs,
     logEvents,
     fileTypes,
-    runFullSync,
+    runFullSync: runFullSyncGuarded,
     subscribeToDocument,
     manifestName,
   });
@@ -216,6 +233,19 @@ async function main() {
 
   await subscribeManifestDocs();
   startPolling();
+
+  // === Fallback revision check (in case WS events are missed) ===
+  // The websocket subscription requires the Feishu Developer Console to
+  // be configured for long-connection events; if it isn't, edit events
+  // never reach this process. Every 5 minutes, run update.js to compare
+  // each doc's revisionId against the manifest and pull any changes.
+  const REV_CHECK_MS = 5 * 60 * 1000;
+  setInterval(() => {
+    runFullSyncGuarded('revision-check').catch((err) => {
+      console.error(`[realtime-sync] revision check failed: ${err.message || err}`);
+    });
+  }, REV_CHECK_MS);
+  console.log(`[realtime-sync] revision fallback every ${REV_CHECK_MS / 1000}s`);
 
   startLocalWatcher(rootDir, {
     onChange: handleLocalChange,
