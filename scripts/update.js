@@ -117,6 +117,16 @@ async function deleteLocalFile(filePath) {
 
 
 async function main() {
+  // --prefer-local: when both the local file and the remote doc changed
+  // (a conflict), overwrite Feishu with the local .md instead of stopping
+  // at the safety net. The remote version is still saved as *.remote.md
+  // before the upload so nothing is lost. Use this when you know your local
+  // copy is the one you want to keep.
+  const preferLocal = process.argv.includes('--prefer-local');
+  if (preferLocal) {
+    console.log('[prefer-local] conflicts will overwrite Feishu with the local .md (remote version is saved as *.remote.md first)');
+  }
+
   const config = await readConfig();
   const spaceId = requireConfigValue(config, 'wikiSpaceId');
   const folderInput = requireConfigValue(config, 'sync.folderPath');
@@ -328,6 +338,7 @@ async function main() {
     if (remoteChanged && localChanged) {
       const conflictRel = buildConflictPath(fileRel);
       const conflictAbs = path.join(resolvedFolder, conflictRel);
+      // Always stash the remote version first, regardless of which side wins.
       await downloadDocumentToFile(
         doc.documentId,
         token,
@@ -338,7 +349,30 @@ async function main() {
         },
         conflictAbs
       );
-      conflicts += 1;
+      if (preferLocal) {
+        // User opted into "local wins": push local .md to Feishu and
+        // refresh the manifest to the new revision so future syncs match.
+        try {
+          const markdown = await fs.readFile(localInfo.fullPath, 'utf8');
+          await uploadMarkdownToDocument(doc.documentId, token, markdown);
+          const meta = await fetchDocumentMeta(doc.documentId, token);
+          manifestDocs[doc.documentId] = {
+            ...existing,
+            file: fileRel,
+            revisionId: meta.revision_id ?? meta.revisionId ?? doc.revisionId,
+            title: meta.title || doc.title,
+            fileType: resolveFileType(doc, existing),
+            hash: localInfo.hash,
+          };
+          uploaded += 1;
+          console.log(`[prefer-local] uploaded ${doc.title} (remote kept at ${conflictRel})`);
+        } catch (err) {
+          console.error(`[prefer-local] failed to upload ${doc.title}: ${err.message || err}`);
+          conflicts += 1;
+        }
+      } else {
+        conflicts += 1;
+      }
       continue;
     }
 

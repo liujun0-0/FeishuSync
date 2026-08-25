@@ -343,6 +343,19 @@ async function createTableWithContent(documentId, token, tableBlock, index) {
     return index;
   }
 
+  // Feishu docx /children rejects tables larger than 9 cells with code
+  // 1770001 ("invalid param") — empirically confirmed (2x2 OK, 11x3 fails).
+  // Until we adopt the /descendant endpoint for full subtree creation,
+  // skip oversize tables and warn so the rest of the document uploads.
+  const totalCells = rowSize * columnSize;
+  if (totalCells > 9) {
+    console.warn(
+      `[feishu] skipping oversize table (${rowSize}x${columnSize} = ${totalCells} cells); ` +
+        `feishu docx /children accepts at most ~9 cells. Edit the doc on feishu.cn to paste this table manually.`
+    );
+    return index;
+  }
+
   const payload = {
     block_type: BLOCK_TYPE.table,
     table: {
