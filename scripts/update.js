@@ -18,6 +18,7 @@ import {
   collectWikiNodePaths,
   createWikiNode,
   fetchDocumentMeta,
+  fetchChildrenCount,
   fetchWikiNodes,
   downloadDocumentToFile,
   uploadMarkdownToDocument,
@@ -176,6 +177,7 @@ async function main() {
       parentPath: parentPathByObjToken.get(node.documentId) || '',
       revisionId: meta.revision_id ?? meta.revisionId ?? null,
       fileType: node.objType || 'docx',
+      hasChild: node.hasChild,
     });
   }
 
@@ -300,6 +302,16 @@ async function main() {
     const localExists = Boolean(localInfo);
 
     if (!existing) {
+      // Containers (has_child=true) carry the wiki node, but their own body
+      // is often empty. Skip downloading empty containers so we don't litter
+      // the local tree with empty .md files mirroring empty directories.
+      if (doc.hasChild) {
+        const count = await fetchChildrenCount(doc.documentId, token);
+        if (count === 0) {
+          skipped += 1;
+          continue;
+        }
+      }
       const hash = await downloadDocumentToFile(
         doc.documentId,
         token,
@@ -324,6 +336,14 @@ async function main() {
     }
 
     if (!localExists) {
+      // Containers (has_child=true) own their sub-documents — never delete
+      // them just because the local .md is missing. The container itself
+      // might be a workspace the user keeps in Feishu but doesn't mirror
+      // locally; deleting it would orphan the children.
+      if (doc.hasChild) {
+        skipped += 1;
+        continue;
+      }
       await deleteRemoteDocument(doc.documentId, token, resolveFileType(doc, existing));
       delete manifestDocs[doc.documentId];
       deletedRemote += 1;

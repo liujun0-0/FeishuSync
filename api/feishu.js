@@ -215,16 +215,19 @@ export async function collectWikiDocNodes(spaceId, token, parentNodeToken, resul
     const objType = node.obj_type || node.objType;
     const objToken = node.obj_token || node.objToken;
 
-    // Container nodes (folders) in Feishu wiki v2 also have obj_type=docx but
-    // they have has_child=true and no real content. Only collect leaf documents.
-    const isLeafDocument =
-      objToken && (objType === 'docx' || objType === 'doc') && !hasChild;
-    if (isLeafDocument) {
+    // Collect every docx/doc node — including containers (has_child=true).
+    // Containers in Feishu wiki v2 are themselves docx documents that may
+    // carry an introduction/overview in their own body. The caller decides
+    // what to do with each one (download content if non-empty, skip otherwise,
+    // never delete containers even if local file is missing).
+    const isDocument = objToken && (objType === 'docx' || objType === 'doc');
+    if (isDocument) {
       result.push({
         nodeToken,
         documentId: objToken,
         title: node.title || node.name || '',
         objType,
+        hasChild: Boolean(hasChild),
       });
     }
 
@@ -508,7 +511,7 @@ export async function moveWikiNode(spaceId, token, nodeToken, parentNodeToken) {
   );
 }
 
-async function fetchChildrenCount(documentId, token) {
+export async function fetchChildrenCount(documentId, token) {
   let count = 0;
   let pageToken;
   let hasMore = true;
