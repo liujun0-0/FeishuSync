@@ -343,20 +343,59 @@ async function createTableWithContent(documentId, token, tableBlock, index) {
     return index;
   }
 
-  // Feishu docx /children rejects tables larger than 9 cells with code
-  // 1770001 ("invalid param") — empirically confirmed (2x2 OK, 11x3 fails).
-  // Until we adopt the /descendant endpoint for full subtree creation,
-  // skip oversize tables and warn so the rest of the document uploads.
-  const totalCells = rowSize * columnSize;
-  if (totalCells > 9) {
-    console.warn(
-      `[feishu] skipping oversize table (${rowSize}x${columnSize} = ${totalCells} cells); ` +
-        `feishu docx /children accepts at most ~9 cells. Edit the doc on feishu.cn to paste this table manually.`
-    );
-    return index;
+  // Build the full subtree (table + every table_cell + each cell's text
+  // blocks) and create it in one POST to /descendant. The /children endpoint
+  // refuses tables with more than ~9 cells (1770001 invalid param), but
+  // /descendant accepts arbitrarily sized tables by sending the entire
+  // tree at once with temporary block IDs linked via `children` arrays.
+  //
+  // Note: temporary block_ids must be alphanumeric only. Underscores cause
+  // Feishu to return 1770001 ("invalid param"). Tested: 11x3 OK with
+  // "tblxxx" / "cellxxx" / "txtxxx" but fails with "tbl_xxx".
+  const tableId = `tbl${Date.now()}${Math.floor(Math.random() * 1e9)}`;
+  const cellIds = [];
+  const descendants = [];
+  const tmp = () => Math.floor(Math.random() * 1e12).toString(36);
+
+  for (let r = 0; r < rowSize; r += 1) {
+    for (let c = 0; c < columnSize; c += 1) {
+      const cellId = `cell${tmp()}`;
+      cellIds.push(cellId);
+
+      // Each cell holds one or more text blocks. Empty cells need at least
+      // one text block — Feishu rejects empty cells otherwise.
+      const cellContent = (rows[r] && rows[r][c]) || '';
+      const cellLines = cellContent.length
+        ? cellContent.split('\n')
+        : [''];
+      const childIds = [];
+      const textBlocks = cellLines.map((line) => {
+        const textBlockId = `txt${tmp()}`;
+        childIds.push(textBlockId);
+        return {
+          block_id: textBlockId,
+          block_type: BLOCK_TYPE.text,
+          text: {
+            style: { align: 1, folded: false },
+            elements: line.trim() === '' ? [] : inlineMarkdownToElements(line),
+          },
+          children: [],
+        };
+      });
+
+      descendants.push({
+        block_id: cellId,
+        block_type: BLOCK_TYPE.table_cell,
+        table_cell: {},
+        children: childIds,
+      });
+      descendants.push(...textBlocks);
+    }
   }
 
-  const payload = {
+  // Table root goes first in descendants.
+  descendants.unshift({
+    block_id: tableId,
     block_type: BLOCK_TYPE.table,
     table: {
       property: {
@@ -366,43 +405,18 @@ async function createTableWithContent(documentId, token, tableBlock, index) {
         header_column: false,
       },
     },
-  };
+    children: cellIds,
+  });
 
-  const resp = await apiPost(
-    `/docx/v1/documents/${documentId}/blocks/${documentId}/children`,
+  await apiPost(
+    `/docx/v1/documents/${documentId}/blocks/${documentId}/descendant`,
     token,
     {
       index,
-      children: [payload],
+      children_id: [tableId],
+      descendants,
     }
   );
-
-  const created = extractBlocksFromResponse(resp);
-  const createdTable =
-    created.find((block) => block.block_type === BLOCK_TYPE.table) || created[0];
-  const cellIds = createdTable?.table?.cells || [];
-
-  if (!cellIds.length) {
-    return index + 1;
-  }
-
-  for (let r = 0; r < rows.length; r += 1) {
-    for (let c = 0; c < rows[r].length; c += 1) {
-      const cellId = cellIds[r * columnSize + c];
-      if (!cellId) continue;
-      const cellContent = rows[r][c] || '';
-      if (!cellContent.trim()) continue;
-      const children = buildCellTextBlocks(cellContent);
-      await apiPost(
-        `/docx/v1/documents/${documentId}/blocks/${cellId}/children`,
-        token,
-        {
-          index: 0,
-          children,
-        }
-      );
-    }
-  }
 
   return index + 1;
 }
