@@ -281,19 +281,29 @@ function renderTable(tableData, blockMap, options = {}) {
 
   const mergeInfoList = tableData.property.merge_info || tableData.property.mergeInfo;
   const mergeInfoMap = {};
+  let hasMerges = false;
   if (Array.isArray(mergeInfoList)) {
     for (let i = 0; i < mergeInfoList.length; i += 1) {
       const rowIndex = Math.floor(i / columnSize);
       const colIndex = i % columnSize;
+      const normalized = normalizeMergeInfo(mergeInfoList[i]);
+      if (normalized && (normalized.rowSpan > 1 || normalized.colSpan > 1)) {
+        hasMerges = true;
+      }
       if (!mergeInfoMap[rowIndex]) mergeInfoMap[rowIndex] = {};
-      mergeInfoMap[rowIndex][colIndex] = normalizeMergeInfo(mergeInfoList[i]);
+      mergeInfoMap[rowIndex][colIndex] = normalized;
     }
   }
+
+  // Markdown tables cannot express rowspan/colspan, so any table that uses
+  // merged cells falls back to HTML automatically. The user can also force
+  // HTML for a plain table by passing options.htmlTable = true.
+  const useHtml = options.htmlTable === true || hasMerges;
 
   // Default output: GFM markdown table. Markdown tables don't natively
   // support row/column spans, so for spanned cells we just repeat the
   // content in every cell that the span covers.
-  if (options.htmlTable !== true) {
+  if (!useHtml) {
     const flattenCells = [];
     for (let r = 0; r < rows.length; r += 1) {
       for (let c = 0; c < columnSize; c += 1) {
@@ -345,8 +355,9 @@ function renderTable(tableData, blockMap, options = {}) {
     return lines.join('\n');
   }
 
-  // HTML output (opt-in via options.htmlTable = true). Preserves row/column
-  // spans using rowspan/colspan attributes.
+  // HTML output (forced when options.htmlTable = true OR the table contains
+  // merged cells that markdown cannot express). Preserves row/column spans
+  // using rowspan/colspan attributes.
   const processed = new Set();
   const html = [];
   html.push('<table>');
