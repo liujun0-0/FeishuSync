@@ -124,7 +124,7 @@ function blockTypeFromBlock(block) {
   return null;
 }
 
-function renderBlock(block, blockMap, indentLevel = 0) {
+function renderBlock(block, blockMap, indentLevel = 0, options = {}) {
   const lines = [];
   const type = blockTypeFromBlock(block);
   const indent = '  '.repeat(indentLevel);
@@ -134,7 +134,7 @@ function renderBlock(block, blockMap, indentLevel = 0) {
       const title = textElementsToMarkdown(block.page?.elements || []);
       lines.push(`# ${title}`.trimEnd());
       lines.push('---');
-      renderChildren(block, blockMap, lines, indentLevel);
+      renderChildren(block, blockMap, lines, indentLevel, options);
       break;
     }
     case BLOCK_TYPE.text: {
@@ -160,20 +160,20 @@ function renderBlock(block, blockMap, indentLevel = 0) {
       const key = `heading${level}`;
       const text = textElementsToMarkdown(block[key]?.elements || []);
       lines.push(`${'#'.repeat(level)} ${text}`.trimEnd());
-      renderChildren(block, blockMap, lines, indentLevel);
+      renderChildren(block, blockMap, lines, indentLevel, options);
       break;
     }
     case BLOCK_TYPE.bullet: {
       const text = textElementsToMarkdown(block.bullet?.elements || []);
       lines.push(`${indent}- ${text}`.trimEnd());
-      renderChildren(block, blockMap, lines, indentLevel + 1);
+      renderChildren(block, blockMap, lines, indentLevel + 1, options);
       break;
     }
     case BLOCK_TYPE.ordered: {
       const text = textElementsToMarkdown(block.ordered?.elements || []);
       const order = calculateOrderedIndex(block, blockMap);
       lines.push(`${indent}${order}. ${text}`.trimEnd());
-      renderChildren(block, blockMap, lines, indentLevel + 1);
+      renderChildren(block, blockMap, lines, indentLevel + 1, options);
       break;
     }
     case BLOCK_TYPE.code: {
@@ -205,11 +205,11 @@ function renderBlock(block, blockMap, indentLevel = 0) {
       break;
     }
     case BLOCK_TYPE.table: {
-      lines.push(renderTable(block.table, blockMap));
+      lines.push(renderTable(block.table, blockMap, options));
       break;
     }
     case BLOCK_TYPE.table_cell: {
-      lines.push(renderTableCell(block, blockMap));
+      lines.push(renderTableCell(block, blockMap, options));
       break;
     }
     case BLOCK_TYPE.quote_container: {
@@ -217,7 +217,7 @@ function renderBlock(block, blockMap, indentLevel = 0) {
       for (const childId of childIds) {
         const child = blockMap.get(childId);
         if (!child) continue;
-        const childLines = renderBlock(child, blockMap, indentLevel).split('\n');
+        const childLines = renderBlock(child, blockMap, indentLevel, options).split('\n');
         for (const line of childLines) {
           if (line === '') {
             lines.push('>');
@@ -229,7 +229,7 @@ function renderBlock(block, blockMap, indentLevel = 0) {
       break;
     }
     default: {
-      renderChildren(block, blockMap, lines, indentLevel);
+      renderChildren(block, blockMap, lines, indentLevel, options);
       break;
     }
   }
@@ -237,13 +237,13 @@ function renderBlock(block, blockMap, indentLevel = 0) {
   return lines.join('\n');
 }
 
-function renderTableCell(block, blockMap) {
+function renderTableCell(block, blockMap, options = {}) {
   const parts = [];
   const childIds = block.children || [];
   for (const childId of childIds) {
     const child = blockMap.get(childId);
     if (!child) continue;
-    parts.push(renderBlock(child, blockMap, 0));
+    parts.push(renderBlock(child, blockMap, 0, options));
   }
   return parts.join('<br/>');
 }
@@ -255,7 +255,7 @@ function normalizeMergeInfo(mergeInfo) {
   return { rowSpan, colSpan };
 }
 
-function renderTable(tableData, blockMap) {
+function renderTable(tableData, blockMap, options = {}) {
   if (!tableData || !tableData.property) return '';
 
   const columnSize =
@@ -269,7 +269,7 @@ function renderTable(tableData, blockMap) {
     const cellId = cells[i];
     const cellBlock = blockMap.get(cellId);
     const cellContent = cellBlock
-      ? renderTableCell(cellBlock, blockMap).replace(/\n/g, '')
+      ? renderTableCell(cellBlock, blockMap, options)
       : '';
     const rowIndex = Math.floor(i / columnSize);
     const colIndex = i % columnSize;
@@ -290,10 +290,66 @@ function renderTable(tableData, blockMap) {
     }
   }
 
+  // Default output: GFM markdown table. Markdown tables don't natively
+  // support row/column spans, so for spanned cells we just repeat the
+  // content in every cell that the span covers.
+  if (options.htmlTable !== true) {
+    const flattenCells = [];
+    for (let r = 0; r < rows.length; r += 1) {
+      for (let c = 0; c < columnSize; c += 1) {
+        const mergeInfo = mergeInfoMap[r]?.[c];
+        const rowSpan = mergeInfo?.rowSpan || 1;
+        const colSpan = mergeInfo?.colSpan || 1;
+        const content = rows[r][c] ?? '';
+        for (let rr = 0; rr < rowSpan; rr += 1) {
+          for (let cc = 0; cc < colSpan; cc += 1) {
+            flattenCells.push({
+              row: r + rr,
+              col: c + cc,
+              content: rr === 0 && cc === 0 ? content : '',
+            });
+          }
+        }
+      }
+    }
+    // Render each row with cells sorted by column index.
+    const escapedRows = [];
+    const colWidths = new Array(columnSize).fill(3);
+    for (let r = 0; r < rows.length; r += 1) {
+      const cellsForRow = flattenCells
+        .filter((c) => c.row === r)
+        .sort((a, b) => a.col - b.col);
+      const padded = new Array(columnSize).fill('');
+      for (const c of cellsForRow) {
+        // Convert embedded newlines to <br> so multi-line cell text survives
+        // round-trip; escape pipe characters so they don't break the row.
+        const safe = (c.content || '')
+          .replace(/\r\n|\r|\n/g, '<br>')
+          .replace(/\|/g, '\\|');
+        padded[c.col] = safe;
+        const visible = safe.replace(/<br>/g, '').length;
+        if (visible > colWidths[c.col]) colWidths[c.col] = visible;
+      }
+      escapedRows.push(padded);
+    }
+    const separator = '| ' + colWidths.map(() => '---').join(' | ') + ' |';
+    const padRow = (row) =>
+      '| ' +
+      row.map((cell, c) => (cell || '').padEnd(colWidths[c], ' ')).join(' | ') +
+      ' |';
+    if (escapedRows.length === 0) return '';
+    const lines = [padRow(escapedRows[0]), separator];
+    for (let r = 1; r < escapedRows.length; r += 1) {
+      lines.push(padRow(escapedRows[r]));
+    }
+    return lines.join('\n');
+  }
+
+  // HTML output (opt-in via options.htmlTable = true). Preserves row/column
+  // spans using rowspan/colspan attributes.
   const processed = new Set();
   const html = [];
   html.push('<table>');
-
   for (let r = 0; r < rows.length; r += 1) {
     html.push('<tr>');
     for (let c = 0; c < rows[r].length; c += 1) {
@@ -318,7 +374,6 @@ function renderTable(tableData, blockMap) {
     }
     html.push('</tr>');
   }
-
   html.push('</table>');
   return html.join('\n');
 }
@@ -329,7 +384,7 @@ function isBlankTextBlock(block) {
   return text.trim().length === 0;
 }
 
-function renderChildren(parent, blockMap, lines, indentLevel) {
+function renderChildren(parent, blockMap, lines, indentLevel, options = {}) {
   const childIds = parent.children || [];
   for (const childId of childIds) {
     const child = blockMap.get(childId);
@@ -343,7 +398,7 @@ function renderChildren(parent, blockMap, lines, indentLevel) {
       continue;
     }
 
-    const rendered = renderBlock(child, blockMap, indentLevel);
+    const rendered = renderBlock(child, blockMap, indentLevel, options);
     if (rendered) {
       lines.push(rendered);
     }
@@ -375,8 +430,11 @@ function codeLanguageToMarkdown(language) {
   return mapping[language] || '';
 }
 
-export function feishuToMarkdown(doc) {
+export function feishuToMarkdown(doc, options = {}) {
   if (!doc || !Array.isArray(doc.blocks)) return '';
+  // options.htmlTable: when true, tables render as <table><tr><td> HTML instead
+  // of the default GFM markdown | cell | cell | format. Defaults to false
+  // (markdown) so local .md files stay clean and portable.
   const blockMap = new Map();
   for (const block of doc.blocks) {
     if (block && block.block_id) {
@@ -391,7 +449,7 @@ export function feishuToMarkdown(doc) {
   }
   if (!root) return '';
 
-  const rendered = renderBlock(root, blockMap, 0);
+  const rendered = renderBlock(root, blockMap, 0, options);
   const normalized = rendered.replace(/\n{3,}/g, '\n\n').replace(/\n+$/g, '');
   return `${normalized}\n`;
 }
