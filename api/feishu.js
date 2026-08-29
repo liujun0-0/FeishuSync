@@ -412,7 +412,7 @@ async function createTableWithContent(documentId, token, tableBlock, index) {
   });
 
   await apiPost(
-    `/docx/v1/documents/${documentId}/blocks/${documentId}/descendant`,
+    `/docx/v1/documents/${documentId}/blocks/${documentId}/descendant?document_revision_id=-1`,
     token,
     {
       index,
@@ -429,11 +429,36 @@ export async function appendBlocks(documentId, token, blocks, startIndex = 0) {
   let index = startIndex;
   for (let i = 0; i < blocks.length; i += CREATE_BATCH_SIZE) {
     const chunk = blocks.slice(i, i + CREATE_BATCH_SIZE);
-    await apiPost(`/docx/v1/documents/${documentId}/blocks/${documentId}/children`, token, {
-      index,
-      children: chunk,
-    });
-    index += chunk.length;
+    try {
+      await apiPost(
+        `/docx/v1/documents/${documentId}/blocks/${documentId}/children?document_revision_id=-1`,
+        token,
+        { index, children: chunk }
+      );
+      index += chunk.length;
+    } catch (batchErr) {
+      // Batch failed (commonly 1770001 invalid param). Retry each block in
+      // the chunk individually so we upload what we can and report the bad
+      // ones; the caller can decide what to do.
+      console.warn(
+        `[feishu] batch upload failed at index ${i} (size=${chunk.length}): ${batchErr.message || batchErr}; retrying block-by-block`
+      );
+      for (const single of chunk) {
+        try {
+          await apiPost(
+            `/docx/v1/documents/${documentId}/blocks/${documentId}/children?document_revision_id=-1`,
+            token,
+            { index, children: [single] }
+          );
+          index += 1;
+        } catch (singleErr) {
+          console.error(
+            `[feishu] skipping block_type=${single.block_type} at index ${index}: ${singleErr.message || singleErr}`
+          );
+          // don't advance index — the failing block isn't actually appended
+        }
+      }
+    }
   }
   return index;
 }
@@ -448,10 +473,21 @@ export async function appendBlocksWithTables(documentId, token, blocks) {
     buffer = [];
   };
 
-  for (const block of blocks) {
+  for (let i = 0; i < blocks.length; i += 1) {
+    const block = blocks[i];
     if (block.block_type === BLOCK_TYPE.table && block._table) {
       await flushBuffer();
-      index = await createTableWithContent(documentId, token, block, index);
+      try {
+        index = await createTableWithContent(documentId, token, block, index);
+      } catch (err) {
+        console.error(
+          `[feishu] createTableWithContent failed at index ${index} ` +
+            `(rows=${block._table.rows.length}, cols=${block._table.rows[0]?.length || 0}): ` +
+            `${err.message || err}; skipping table and continuing`
+        );
+        // Skip this table — do not advance index because the table isn't
+        // actually in the doc.
+      }
       continue;
     }
     buffer.push(block);
