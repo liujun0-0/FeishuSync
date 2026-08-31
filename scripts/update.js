@@ -20,11 +20,14 @@ import {
   fetchDocumentMeta,
   fetchChildrenCount,
   fetchWikiNodes,
+  fetchAllBlocks,
   downloadDocumentToFile,
   uploadMarkdownToDocument,
   createDocumentFromMarkdown,
   moveWikiNode,
 } from '../api/feishu.js';
+import { feishuToMarkdown } from '../api/feishu-md.js';
+import { mergeRemoteIntoLocal } from '../api/merge.js';
 
 if (typeof fetch !== 'function') {
   console.error('This CLI requires Node.js 18+ (global fetch).');
@@ -198,6 +201,7 @@ async function main() {
   let uploaded = 0;
   let conflicts = 0;
   let skipped = 0;
+  let autoMerged = 0;
   let deletedLocal = 0;
   let deletedRemote = 0;
   let movedRemote = 0;
@@ -356,6 +360,39 @@ async function main() {
       existing.revisionId && doc.revisionId && existing.revisionId !== doc.revisionId;
 
     if (remoteChanged && localChanged) {
+      // Try a content-aware short-circuit: when the manifest hash is just
+      // stale (Feishu revision drifted without anyone actually editing
+      // anything), local and remote usually render to the exact same
+      // markdown. Detect that case and skip the conflict instead of
+      // spamming .remote.md files.
+      try {
+        const remoteBlocks = await fetchAllBlocks(doc.documentId, token);
+        const remoteContent = feishuToMarkdown({
+          metadata: { document_id: doc.documentId },
+          blocks: remoteBlocks,
+        });
+        const localContent = await fs.readFile(fileAbs, 'utf8');
+        const verdict = mergeRemoteIntoLocal(localContent, remoteContent);
+        if (verdict.autoMerged && !verdict.hasConflicts) {
+          // Local and remote are identical — no real conflict. Advance the
+          // manifest to the current Feishu revision so future sync runs
+          // don't keep tripping the same conflict.
+          manifestDocs[doc.documentId] = {
+            ...existing,
+            revisionId: doc.revisionId,
+            hash: localInfo.hash,
+          };
+          autoMerged += 1;
+          console.log(`[merge] auto-resolved ${doc.title} (local == remote)`);
+          continue;
+        }
+      } catch (err) {
+        // If anything goes wrong with the content comparison, fall back to
+        // the conservative behavior below (download + stash .remote.md).
+        console.warn(`[merge] content comparison failed for ${doc.title}: ${err.message || err}`);
+      }
+
+      // Real conflict: stash remote version, keep the safety net.
       const conflictRel = buildConflictPath(fileRel);
       const conflictAbs = path.join(resolvedFolder, conflictRel);
       // Always stash the remote version first, regardless of which side wins.
@@ -393,6 +430,15 @@ async function main() {
       } else {
         conflicts += 1;
       }
+      // Even when we keep the .remote.md safety net, advance the manifest
+      // revision AND hash so the next sync run doesn't trip the same
+      // conflict and re-create .remote.md files that the user already
+      // cleaned up.
+      manifestDocs[doc.documentId] = {
+        ...existing,
+        revisionId: doc.revisionId,
+        hash: localInfo.hash,
+      };
       continue;
     }
 
@@ -509,7 +555,7 @@ async function main() {
   await writeManifest(resolvedFolder, { spaceId, docs: manifestDocs }, manifestName);
 
   console.log(
-    `Sync complete. Downloaded: ${downloaded}, Uploaded: ${uploaded}, Moved Remote: ${movedRemote}, Deleted Local: ${deletedLocal}, Deleted Remote: ${deletedRemote}, Conflicts: ${conflicts}, Skipped: ${skipped}`
+    `Sync complete. Downloaded: ${downloaded}, Uploaded: ${uploaded}, Moved Remote: ${movedRemote}, Deleted Local: ${deletedLocal}, Deleted Remote: ${deletedRemote}, Auto-Merged: ${autoMerged}, Conflicts: ${conflicts}, Skipped: ${skipped}`
   );
 }
 

@@ -5,9 +5,19 @@ user-token.txt
 config.json
 wikid/
 wikid-backup/
+wikid-backup-*/
 .feishu-sync-refresh-token
 .feishu-sync-watchdog.pid
 *.pid
+feishu-backup-*/
+*-backup-*/
+*-pre-merge-*/
+state-final-*/
+manifest-pre-merge-*.json
+config-pre-merge-*.json
+_snap-*.json
+__*.mjs
+_test_*.mjs
 # Logs
 logs
 *.log
