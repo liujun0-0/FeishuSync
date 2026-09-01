@@ -15,6 +15,8 @@ feishu-backup-*/
 state-final-*/
 manifest-pre-merge-*.json
 config-pre-merge-*.json
+manifest-pre-ghost-cleanup-*.json
+config-pre-ghost-cleanup-*.json
 _snap-*.json
 __*.mjs
 _test_*.mjs
