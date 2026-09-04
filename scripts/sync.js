@@ -139,6 +139,7 @@ async function main() {
     const result = await new Promise((resolve) => {
       const child = spawn(process.execPath, [path.join(__dirname, 'update.js')], {
         stdio: 'inherit',
+        windowsHide: true,
       });
       child.on('error', (err) => {
         console.error(`[realtime-sync] full sync failed: ${err.message || err}`);
