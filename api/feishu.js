@@ -5,10 +5,8 @@ import {
   feishuToMarkdown,
   markdownToBlocks,
   inlineMarkdownToElements,
-  createCodeBlockPayload,
   BLOCK_TYPE,
 } from './feishu-md.js';
-import { renderMermaidToPng } from './mermaid-render.js';
 import {
   readManifest,
   writeManifest,
@@ -111,36 +109,30 @@ export function apiPatch(pathSuffix, token, body, query) {
 }
 
 /**
- * 上传 PNG buffer 到飞书文档，返回 file_token。
- * 走 multipart/form-data，不能复用 apiPost (JSON)。
+ * 通用 multipart 上传到飞书 drive /medias/upload_all。
  *
- * 用于本地 mermaid 渲染成 PNG 后上传，作为 A 方案失败时的 B 方案兜底。
- *
- * @param {Buffer} buffer - PNG buffer
- * @param {string} fileName - 文件名，如 'diagram-abc123.png'
- * @param {string} documentId - parent_node (docx_image 父文档)
+ * @param {Buffer} buffer - 文件内容
+ * @param {string} fileName - 文件名（含扩展名）
+ * @param {string} parentType - parent_type（如 'docx_image' / 'docx_file'）
+ * @param {string} parentNode - parent_node（如 documentId 或 imageBlockId）
  * @param {string} token - user_access_token
- * @returns {Promise<string>} file_token
+ * @param {object} [options]
+ * @param {string} [options.contentType] - 二进制 MIME（默认 image/png）
+ * @param {string} [options.driveRouteToken] - 多数据中心路由 token（extra 字段）
+ * @returns {Promise<object>} 完整 API 响应（调用方自取 file_token）
  */
-export async function uploadImage(buffer, fileName, documentId, token) {
-  if (!Buffer.isBuffer(buffer)) {
-    throw new Error('uploadImage: buffer 必须是 Buffer');
-  }
-  if (!fileName || typeof documentId !== 'string' || !token) {
-    throw new Error('uploadImage: fileName/documentId/token 必填');
-  }
-
-  // 构造 multipart/form-data body
+async function uploadMediaMultipart(buffer, fileName, parentType, parentNode, token, options = {}) {
   const boundary = `----FeishuSync${Date.now()}${Math.random().toString(36).slice(2)}`;
-  const parts = [];
-
-  // 文本字段：file_name, parent_type, parent_node, size
   const textFields = {
     file_name: fileName,
-    parent_type: 'docx_image',
-    parent_node: documentId,
+    parent_type: parentType,
+    parent_node: parentNode,
     size: String(buffer.length),
   };
+  if (options.driveRouteToken) {
+    textFields.extra = JSON.stringify({ drive_route_token: options.driveRouteToken });
+  }
+  const parts = [];
   for (const [name, value] of Object.entries(textFields)) {
     parts.push(
       Buffer.from(`--${boundary}\r\n` +
@@ -148,18 +140,16 @@ export async function uploadImage(buffer, fileName, documentId, token) {
         `${value}\r\n`, 'utf8')
     );
   }
-
-  // 二进制字段：file
+  const contentType = options.contentType || 'image/png';
   parts.push(
     Buffer.from(`--${boundary}\r\n` +
       `Content-Disposition: form-data; name="file"; filename="${fileName}"\r\n` +
-      `Content-Type: image/png\r\n\r\n`, 'utf8')
+      `Content-Type: ${contentType}\r\n\r\n`, 'utf8')
   );
   parts.push(buffer);
   parts.push(Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8'));
 
   const body = Buffer.concat(parts);
-
   const url = `${API_BASE}/drive/v1/medias/upload_all`;
   const response = await fetch(url, {
     method: 'POST',
@@ -174,14 +164,65 @@ export async function uploadImage(buffer, fileName, documentId, token) {
   const data = await response.json();
   if (!response.ok || (data.code !== undefined && data.code !== 0)) {
     throw new Error(
-      `uploadImage 失败: HTTP ${response.status} code=${data.code} msg=${data.msg || ''}`
+      `uploadMedia 失败: HTTP ${response.status} code=${data.code} msg=${data.msg || ''}`
     );
   }
+  // 与 apiRequest 保持一致：返回 data.data（脱壳一层）
+  return data.data ?? data;
+}
+
+/**
+ * 上传 PNG buffer 到飞书文档，返回 file_token。
+ *
+ * 保留导出供 Batch 1 兼容旧调用方（实际不再被主上行链路使用——
+ * 见 api/mermaid-render.js 自渲染路径已被官方 import_task 取代）。
+ *
+ * @param {Buffer} buffer - PNG buffer
+ * @param {string} fileName - 文件名
+ * @param {string} parentNode - parent_node
+ * @param {string} token - user_access_token
+ * @returns {Promise<string>} file_token
+ */
+export async function uploadImage(buffer, fileName, parentNode, token, options = {}) {
+  if (!Buffer.isBuffer(buffer)) {
+    throw new Error('uploadImage: buffer 必须是 Buffer');
+  }
+  if (!fileName || typeof parentNode !== 'string' || !token) {
+    throw new Error('uploadImage: fileName/parentNode/token 必填');
+  }
+  const data = await uploadMediaMultipart(buffer, fileName, 'docx_image', parentNode, token, options);
   const fileToken = data.file_token || data.data?.file_token;
   if (!fileToken) {
     throw new Error(`uploadImage 响应缺 file_token: ${JSON.stringify(data).slice(0, 200)}`);
   }
   return fileToken;
+}
+
+/**
+ * 上传 markdown buffer 到飞书 drive（作为 docx_file 类型），
+ * 配合 import_task.create 实现 markdown → docx 整篇导入。
+ *
+ * @param {Buffer} buffer - markdown utf-8 buffer
+ * @param {string} fileName - 文件名（含 .md 扩展名）
+ * @param {string} parentNode - 真实 docx_id（飞书要求 docx_file 类型的 parent_node 必须存在）
+ * @param {string} token - user_access_token
+ * @returns {Promise<object>} 完整 API 响应
+ */
+export async function uploadMarkdownFile(buffer, fileName, parentNode, token) {
+  if (!Buffer.isBuffer(buffer)) {
+    throw new Error('uploadMarkdownFile: buffer 必须是 Buffer');
+  }
+  if (!fileName || !parentNode || !token) {
+    throw new Error('uploadMarkdownFile: fileName/parentNode/token 必填');
+  }
+  return uploadMediaMultipart(
+    buffer,
+    fileName,
+    'docx_file',
+    parentNode,
+    token,
+    { contentType: 'text/markdown' }
+  );
 }
 
 export async function deleteRemoteDocument(documentId, token, fileType) {
@@ -501,10 +542,12 @@ async function createTableWithContent(documentId, token, tableBlock, index) {
 }
 
 export async function appendBlocks(documentId, token, blocks, startIndex = 0) {
-  if (!blocks.length) return startIndex;
+  // 跳过被 mermaid resolve 标记的占位块（已独立插入并 patch token）
+  const effective = (blocks || []).filter((b) => b && !b._skip);
+  if (!effective.length) return startIndex;
   let index = startIndex;
-  for (let i = 0; i < blocks.length; i += CREATE_BATCH_SIZE) {
-    const chunk = blocks.slice(i, i + CREATE_BATCH_SIZE);
+  for (let i = 0; i < effective.length; i += CREATE_BATCH_SIZE) {
+    const chunk = effective.slice(i, i + CREATE_BATCH_SIZE);
     try {
       await apiPost(
         `/docx/v1/documents/${documentId}/blocks/${documentId}/children?document_revision_id=-1`,
@@ -605,6 +648,137 @@ export async function addDocToWiki(spaceId, token, documentId, parentWikiToken) 
   await apiPost(`/wiki/v2/spaces/${resolvedSpaceId}/nodes/move_docs_to_wiki`, token, body);
 }
 
+/**
+ * 通过飞书官方 import_task API 把 markdown 文件导入为 docx。
+ *
+ * 这是飞书**官方**的 markdown → docx 转换通道。飞书服务端会自己解析 markdown，
+ * 包括 ```mermaid``` fenced code block → 飞书画板（block_type=21/44）、
+ * plantUML → 画板、表格、超9行自动拆分、Callout 高亮块 等。
+ *
+ * 流程（参考 openclaw/openclaw#16592 实现）：
+ *   1. 上传 .md 文件到飞书 drive（parent_type: docx_file）
+ *   2. 调 import_task.create（type: docx, file_extension: md）
+ *   3. 轮询 import_task.get 拿到新文档 token
+ *   4. 清理临时文件
+ *
+ * @param {object} options
+ * @param {string} options.token - user_access_token
+ * @param {string} options.markdown - 完整 markdown 内容
+ * @param {string} options.fileName - 临时文件名（不含扩展名）
+ * @param {string} options.spaceId - wiki space id（用作 mount_key，mount_type=1）
+ * @returns {Promise<string>} 新飞书文档的 document_id
+ */
+export async function importMarkdownToDocument({
+  token,
+  markdown,
+  fileName,
+  spaceId,
+  parentWikiToken,
+}) {
+  if (typeof token !== 'string' || !token) {
+    throw new Error('importMarkdownToDocument: token 必填');
+  }
+  if (typeof markdown !== 'string') {
+    throw new Error('importMarkdownToDocument: markdown 必填');
+  }
+  if (typeof spaceId !== 'string' || !spaceId) {
+    throw new Error('importMarkdownToDocument: spaceId 必填');
+  }
+
+  const resolvedSpaceId = await resolveSpaceId(spaceId, token);
+  const mdBuffer = Buffer.from(markdown, 'utf-8');
+  // 临时文件名用时间戳而非 markdown title，避免 wiki 标题里夹带长 H1 + hash 后缀。
+  // 当前 import_task 没有"重命名文档"能力，所以最终 wiki 标题是 "import-{ts}.md"，
+  // 用户可在飞书侧手动重命名。markdown 文件内的 H1 仍是文档正文的标题（heading 1）。
+  const tempFileName = `import-${Date.now().toString(36)}.md`;
+
+  // 创建临时 docx 作为 upload 的 parent_node（飞书要求 docx_file 类型的
+  // parent_node 必须是真实存在的 docx_id）。导入任务完成后会清理。
+  const { documentId: tempDocId } = await createDocument(token, '[tmp] ' + tempFileName);
+
+  // 第 1 步：上传 .md 文件到飞书 drive（parent_node 必须用真实 docx）
+  const uploadRes = await uploadMarkdownFile(mdBuffer, tempFileName, tempDocId, token);
+  const fileToken = uploadRes?.file_token;
+  if (!fileToken) {
+    throw new Error(
+      `importMarkdownToDocument: upload 失败，响应缺 file_token: ${JSON.stringify(uploadRes).slice(0, 200)}`
+    );
+  }
+
+  try {
+    // 第 2 步：创建导入任务
+    // mount_type=1, mount_key='' → 导入到调用者云盘根目录。
+    // 不直接挂到 wiki space：import_task API 不支持挂到 wiki，
+    // 改在导入完成后调 addDocToWiki 把 docx 移到 wiki。
+    const importRes = await apiPost(
+      '/drive/v1/import_tasks',
+      token,
+      {
+        file_extension: 'md',
+        file_token: fileToken,
+        type: 'docx',
+        file_name: tempFileName,
+        point: { mount_type: 1, mount_key: '' },
+      }
+    );
+    const ticket = importRes?.ticket || importRes?.data?.ticket;
+    if (!ticket) {
+      throw new Error(
+        `importMarkdownToDocument: 创建导入任务失败: ${JSON.stringify(importRes).slice(0, 200)}`
+      );
+    }
+
+    // 第 3 步：轮询等待
+    const maxAttempts = 10;
+    const pollIntervalMs = 2000;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      await new Promise((r) => setTimeout(r, pollIntervalMs));
+      const pollRes = await apiGet(`/drive/v1/import_tasks/${ticket}`, token);
+      const result = pollRes?.result || {};
+      const status = result.job_status;
+      // 飞书文档对 job_status 没有公开枚举值。社区观察（lark-cli drive +import）：
+      // - 0 = 成功
+      // - 1 / 2 = 处理中
+      // - > 2 = 失败
+      if (result.token && (status === 0 || status === undefined || status === 1 || status === 2)) {
+        if (status === 0 || status === undefined) {
+          // 视为成功（有 token + 状态合理）
+          const newDocId = result.token;
+          try {
+            await addDocToWiki(spaceId, token, newDocId, parentWikiToken || null);
+          } catch (wikiErr) {
+            console.warn(
+              `[import_task] addDocToWiki 失败 (${wikiErr.message || wikiErr}); doc 保留在云盘根目录`
+            );
+          }
+          return newDocId;
+        }
+        // 否则继续轮询
+      }
+      if (status !== undefined && status > 2) {
+        throw new Error(
+          `importMarkdownToDocument: 导入失败 status=${status} msg=${result.job_error_msg || ''}`
+        );
+      }
+    }
+    throw new Error('importMarkdownToDocument: 导入超时（10 次轮询未完成）');
+  } finally {
+    // 第 4 步：清理临时 doc 和上传文件（best-effort）
+    // 先删临时 docx（移走的父 doc），再删上传的 .md 文件。
+    // openclaw 实现参考：先删 docx，docx 删除会自动清理挂在它下的 file_token。
+    try {
+      await deleteRemoteDocument(tempDocId, token, 'docx');
+    } catch {
+      // ignore
+    }
+    try {
+      await apiDelete(`/drive/v1/files/${fileToken}`, token, undefined, { type: 'file' });
+    } catch {
+      // ignore
+    }
+  }
+}
+
 // Move an existing wiki NODE (already in the wiki tree) to a different parent
 // container. The correct endpoint for wiki-internal moves is
 // POST /wiki/v2/spaces/{space_id}/nodes/{node_token}/move with
@@ -666,73 +840,53 @@ async function deleteAllChildren(documentId, token) {
   }
 }
 
+/**
+ * 原地更新文档内容（保留 docId）。
+ *
+ * 走 block-by-block 路径：先清空文档 children，再用 markdownToBlocks
+ * 逐块 append。Mermaid 代码块在飞书侧会变成普通 code block（飞书块
+ * 类型 14），无法渲染为画板——如果需要 mermaid 渲染，请改用
+ * createDocumentFromMarkdown 走 import_task 路径。
+ *
+ * @param {string} documentId
+ * @param {string} token
+ * @param {string} markdown
+ */
 export async function uploadMarkdownToDocument(documentId, token, markdown) {
   const { blocks } = markdownToBlocks(markdown);
-  await resolveMermaidPlaceholderBlocks(blocks, documentId, token);
   await deleteAllChildren(documentId, token);
   await appendBlocksWithTables(documentId, token, blocks);
 }
 
 /**
- * 处理 markdownToBlocks 产生的 mermaid image 占位块（Batch 1，B 方案）：
- * 渲染 PNG → 上传飞书 → 替换为真正的 image block。
- * 任一环节失败则降级为原样 mermaid 代码块，保证整个文档同步不中断。
+ * 通过飞书官方 import_task API 整篇导入 markdown 并挂到 wiki space。
  *
- * A 方案（diagram block）落地后，优先路径将在这里先尝试 diagram，
- * 失败再走本函数的 PNG 路径。
+ * 飞书服务端解析 markdown（含 ```mermaid``` → 飞书画板 / 表格自动拆分 /
+ * Callout 等），无需本地逐块构造。这是推荐的**新建**文档路径。
  *
- * @param {Array<object>} blocks - markdownToBlocks 输出的 block 数组（原地修改）
- * @param {string} documentId - 目标飞书文档 id（作为上传 parent_node）
+ * 注意：import_task 总是创建新 documentId，**不**支持原地更新。如需
+ * 原地保留 docId，请用 uploadMarkdownToDocument。
+ *
+ * @param {string} spaceId - wiki space id
  * @param {string} token - user_access_token
+ * @param {string} markdown
+ * @param {string} [parentWikiToken] - （当前未使用，预留）
+ * @returns {Promise<string>} 新飞书文档 document_id
  */
-async function resolveMermaidPlaceholderBlocks(blocks, documentId, token) {
-  if (!Array.isArray(blocks)) return;
-  for (let idx = 0; idx < blocks.length; idx += 1) {
-    const block = blocks[idx];
-    if (!block || typeof block._mermaid !== 'string') continue;
-    const source = block._mermaid;
-    const hash = block._mermaidHash || '';
-    try {
-      const png = await renderMermaidToPng(source);
-      const fileName = `mermaid-${hash || Date.now().toString(36)}.png`;
-      const fileToken = await uploadImage(png, fileName, documentId, token);
-      // 替换占位块为干净的 image block（剥掉 _mermaid 私有字段）
-      blocks[idx] = {
-        block_type: BLOCK_TYPE.image,
-        image: { token: fileToken },
-      };
-      console.log(`[diagram] mermaid block rendered & uploaded (${fileName}, ${png.length} bytes)`);
-    } catch (err) {
-      // 降级：保留原 mermaid 源码为普通代码块
-      console.warn(
-        `[diagram] mermaid render/upload failed, fallback to code block: ${err.message || err}`
-      );
-      blocks[idx] = createCodeBlockPayload(source);
-    }
-  }
-}
-
 export async function createDocumentFromMarkdown(spaceId, token, markdown, parentWikiToken) {
-  const { title, blocks } = markdownToBlocks(markdown);
-  const { documentId, usedTitle } = await createDocument(token, title);
-
-  const contentBlocks = usedTitle
-    ? blocks
-    : [
-        {
-          block_type: BLOCK_TYPE.heading1,
-          heading1: {
-            style: {},
-            elements: [{ text_run: { content: title, text_element_style: {} } }],
-          },
-        },
-        ...blocks,
-      ];
-
-  await resolveMermaidPlaceholderBlocks(contentBlocks, documentId, token);
-  await appendBlocksWithTables(documentId, token, contentBlocks);
-  await addDocToWiki(spaceId, token, documentId, parentWikiToken);
-  return documentId;
+  const { title } = markdownToBlocks(markdown);
+  const fileName = (title || 'Untitled').replace(/[\\/:*?"<>|\r\n\t]+/g, '_').slice(0, 80);
+  return importMarkdownToDocument({
+    token,
+    markdown,
+    fileName,
+    spaceId,
+    // parentWikiToken 当前未在 import_task 路径里使用；
+    // 飞书 import_task 文档默认挂到 space 根节点。
+    // 后续若需挂到指定父节点，可在 importMarkdownToDocument 内
+    // 通过 mount_type=2 + mount_key=parent_wiki_token 扩展。
+    parentWikiToken,
+  });
 }
 
 export async function subscribeToDocEvents(fileToken, token, fileType, eventType) {

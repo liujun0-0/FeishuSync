@@ -9,7 +9,6 @@ wikid-backup-*/
 .feishu-sync-refresh-token
 .feishu-sync-watchdog.pid
 *.pid
-.feishu-diagram-cache/
 feishu-backup-*/
 *-backup-*/
 *-pre-merge-*/
