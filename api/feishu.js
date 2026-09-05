@@ -1076,34 +1076,52 @@ export function createChangeProcessor({
       const baseName = sanitizeFilename(title) || docId;
       const desiredName = `${baseName}.md`;
       let fileRel = entry?.file;
-      const renameCandidates = new Set(usedPaths);
-      if (fileRel) {
+      // 标题重命名保护（防幽灵副本）：
+      // 1) 仅当 basename 真的变化（标题被改）时才重命名，否则不动文件位置；
+      // 2) 重命名只在原文件所在目录内进行，绝不把子目录文件搬到根目录。
+      // 旧实现用扁平 rootDir 计算唯一路径，导致每次远程事件都会把子目录文件
+      // 拖到根目录并堆积 -N 后缀副本。
+      if (fileRel && path.posix.basename(fileRel) !== desiredName) {
+        const dir = path.posix.dirname(fileRel);
+        const renameCandidates = new Set(usedPaths);
         renameCandidates.delete(fileRel);
-      }
-      const desiredRel = await ensureUniqueFilePathWithFs(
-        rootDir,
-        desiredName,
-        renameCandidates
-      );
-      if (!fileRel) {
-        fileRel = desiredRel;
-      } else if (desiredRel && desiredRel !== fileRel) {
-        const oldRel = fileRel;
-        const oldAbs = path.join(rootDir, oldRel);
-        const newAbs = path.join(rootDir, desiredRel);
+        let candidate = desiredName;
+        let counter = 1;
+        let newRel =
+          dir === '.' ? candidate : ensurePosixPath(path.join(dir, candidate));
+        while (
+          usedPaths.has(newRel) ||
+          (await fileExists(path.join(rootDir, newRel)))
+        ) {
+          candidate = `${baseName}-${counter}.md`;
+          newRel =
+            dir === '.' ? candidate : ensurePosixPath(path.join(dir, candidate));
+          counter += 1;
+        }
+        const oldAbs = path.join(rootDir, fileRel);
+        const newAbs = path.join(rootDir, newRel);
         if (await fileExists(oldAbs)) {
           await fs.rename(oldAbs, newAbs);
         }
-        fileRel = desiredRel;
-        usedPaths.delete(oldRel);
-        usedPaths.add(fileRel);
-        fileToDoc.delete(oldRel);
-        fileToDoc.set(fileRel, docId);
-        localBatch.delete(oldRel);
+        usedPaths.delete(fileRel);
+        usedPaths.add(newRel);
+        fileToDoc.delete(fileRel);
+        fileToDoc.set(newRel, docId);
+        localBatch.delete(fileRel);
+        fileRel = newRel;
         if (entry) {
           entry.file = fileRel;
         }
         manifestDirty = true;
+      }
+      if (!fileRel) {
+        // manifest 无条目的新文档：保持原行为落到根目录
+        const renameCandidates = new Set(usedPaths);
+        fileRel = await ensureUniqueFilePathWithFs(
+          rootDir,
+          desiredName,
+          renameCandidates
+        );
       }
       localBatch.delete(fileRel);
 
@@ -1216,6 +1234,26 @@ export function createChangeProcessor({
         manifestDirty = true;
       } else {
         const markdown = await fs.readFile(fileAbs, 'utf8');
+        // 防幽灵副本守卫：本地文件无 manifest 条目时，先比对其 H1 标题。
+        // 若同标题文档已被跟踪（其他 docId），说明这是一份重复内容——
+        // 直接新建会在 wiki 侧再繁殖一个副本（正反馈循环的源头）。
+        // 跳过并告警，由人工决定保留哪一份。
+        const titleMatch = markdown.match(/^#\s+(.+)\s*$/m);
+        const localTitle = titleMatch ? titleMatch[1].trim() : '';
+        if (localTitle) {
+          const titleKey = localTitle.toLowerCase();
+          const trackedTitles = new Set(
+            Object.values(manifestDocs)
+              .map((e) => (e?.title || '').toLowerCase())
+              .filter(Boolean)
+          );
+          if (trackedTitles.has(titleKey)) {
+            console.warn(
+              `[realtime-sync] skip creating doc for "${fileRel}": doc titled "${localTitle}" already tracked (ghost-duplicate guard)`
+            );
+            continue;
+          }
+        }
         const newDocId = await createDocumentFromMarkdown(spaceId, token, markdown);
         const meta = await fetchDocumentMeta(newDocId, token);
         manifestDocs[newDocId] = {
@@ -1260,6 +1298,13 @@ export async function syncNewDocsFromWiki({
   const manifestDocs = manifest.docs || {};
   const existingDocIds = new Set(Object.keys(manifestDocs));
   const usedPaths = new Set();
+  // 防幽灵副本守卫：已被跟踪的标题集合。wiki 侧重复文档（同标题不同 docId）
+  // 不再下载为 -N 本地副本，避免本地/远端副本正反馈繁殖。
+  const trackedTitles = new Set(
+    Object.values(manifestDocs)
+      .map((e) => (e?.title || '').toLowerCase())
+      .filter(Boolean)
+  );
   for (const entry of Object.values(manifestDocs)) {
     if (entry?.file) usedPaths.add(entry.file);
   }
@@ -1283,6 +1328,13 @@ export async function syncNewDocsFromWiki({
     }
 
     const title = meta.title || node.title || '';
+    const titleKey = title.toLowerCase();
+    if (title && trackedTitles.has(titleKey)) {
+      console.warn(
+        `[realtime-sync] skip duplicate wiki doc ${docId} titled "${title}" (ghost-duplicate guard)`
+      );
+      continue;
+    }
     const revisionId = meta.revision_id ?? meta.revisionId ?? null;
     const baseName = sanitizeFilename(title) || docId;
     const fileRel = await ensureUniqueFilePathWithFs(rootDir, `${baseName}.md`, usedPaths);
@@ -1304,6 +1356,7 @@ export async function syncNewDocsFromWiki({
     };
     usedPaths.add(fileRel);
     existingDocIds.add(docId);
+    if (title) trackedTitles.add(titleKey);
     manifestDirty = true;
     added += 1;
 
