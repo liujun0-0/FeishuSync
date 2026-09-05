@@ -25,6 +25,27 @@ export const API_BASE = 'https://open.feishu.cn/open-apis';
 const DELETE_BATCH_SIZE = 100;
 const CREATE_BATCH_SIZE = 100;
 
+/**
+ * Token 热更新支持。
+ *
+ * sync.js 是常驻进程，启动时读一次 token 用到底；auth 进程每 ~96 分钟自动
+ * 刷新 token 并写回 user-token.txt，但常驻进程拿的还是旧 token → 全部 API
+ * 调用撞 99991677（token expired），直到进程重启。
+ *
+ * 解法：sync.js 启动时调 setTokenReloader(() => readToken(tokenPath))。
+ * apiRequest 遇到 99991677/99991661 时通过 reloader 重读最新 token 并重试，
+ * 整个链路自愈，无需重启。
+ */
+let tokenReloader = null;
+
+export function setTokenReloader(fn) {
+  tokenReloader = typeof fn === 'function' ? fn : null;
+}
+
+// 触发 token 重载并重试的错误码：
+// 99991677 = access token expired；99991661 = access token invalid
+const TOKEN_RELOAD_CODES = new Set([99991677, 99991661]);
+
 export async function apiRequest(method, pathSuffix, token, { query = {}, body } = {}) {
   const url = new URL(`${API_BASE}${pathSuffix}`);
   for (const [key, value] of Object.entries(query)) {
@@ -46,7 +67,10 @@ export async function apiRequest(method, pathSuffix, token, { query = {}, body }
   }
 
   const maxRetries = 5;
+  let authToken = token;
+  let tokenReloaded = false;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    headers.Authorization = `Bearer ${authToken}`;
     let response;
     try {
       response = await fetch(url, options);
@@ -83,6 +107,16 @@ export async function apiRequest(method, pathSuffix, token, { query = {}, body }
     }
 
     if (data.code !== 0) {
+      // token 失效自愈：重读 token 文件换新 token 重试一次
+      if (TOKEN_RELOAD_CODES.has(data.code) && tokenReloader && !tokenReloaded) {
+        const fresh = await tokenReloader().catch(() => null);
+        if (fresh && fresh !== authToken) {
+          authToken = fresh;
+          tokenReloaded = true;
+          console.log('[feishu] token expired; reloaded fresh token from file and retrying');
+          continue;
+        }
+      }
       const message = data.msg || data.error_description || data.error || 'Unknown error';
       throw new Error(`API error (${data.code}): ${message}`);
     }
@@ -497,7 +531,12 @@ async function createTableWithContent(documentId, token, tableBlock, index) {
           block_type: BLOCK_TYPE.text,
           text: {
             style: { align: 1, folded: false },
-            elements: line.trim() === '' ? [] : inlineMarkdownToElements(line),
+            // /descendant 接口拒绝 elements 为空的 text block（/children 允许），
+            // 因此空单元格必须用单个空格占位，否则整表 1770001。
+            elements:
+              line.trim() === ''
+                ? [{ text_run: { content: ' ', text_element_style: {} } }]
+                : inlineMarkdownToElements(line),
           },
           children: [],
         };
