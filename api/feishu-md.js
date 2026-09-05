@@ -1,4 +1,16 @@
+import crypto from 'node:crypto';
+
 const DEFAULT_ALIGN = 1;
+
+/**
+ * 计算 mermaid 源码的内容 hash（sha256 前 16 位）。
+ * 用于占位块标识与后续语义比较（Batch 3 冲突保护复用）。
+ * @param {string} source - mermaid 源码
+ * @returns {string} hash 前 16 位
+ */
+export function createMermaidHash(source) {
+  return crypto.createHash('sha256').update(source || '').digest('hex').slice(0, 16);
+}
 
 export const BLOCK_TYPE = {
   page: 1,
@@ -580,6 +592,22 @@ function mergeElementsWithNewlines(lines) {
   return merged.length ? merged : [textRunElement('')];
 }
 
+/**
+ * 构造普通代码块 payload（与 markdownToBlocks 中 fenced code 结构一致）。
+ * 导出给 feishu.js 的 mermaid 降级路径复用：PNG 渲染/上传失败时，
+ * 把 mermaid 占位块降级为原样代码块，保证同步不中断。
+ * @param {string} codeText - 代码内容
+ * @returns {object} 飞书 code block payload
+ */
+export function createCodeBlockPayload(codeText) {
+  return createBlockPayload({
+    type: BLOCK_TYPE.code,
+    key: 'code',
+    elements: [textRunElement(codeText)],
+    extra: { style: {} },
+  });
+}
+
 export function markdownToBlocks(markdown) {
   const lines = splitMarkdownLines(markdown);
   const blocks = [];
@@ -650,6 +678,24 @@ export function markdownToBlocks(markdown) {
         i += 1;
       }
       const codeText = codeLines.join('\n');
+      // 语言标签，如 ```mermaid / ```js / ```java
+      const lang = trimmed.slice(3).trim().toLowerCase();
+      if (lang === 'mermaid') {
+        // Batch 1 (B 方案)：mermaid → image 占位块。
+        // 不在此处渲染（markdownToBlocks 是同步函数），而是生成一个
+        // 带 _mermaid 元信息的 image 占位块，由上行链路（feishu.js）
+        // 在 async 阶段渲染 PNG + 上传飞书后替换为真正的 image block。
+        // A 方案（diagram）失败时也落到这里。
+        blocks.push({
+          block_type: BLOCK_TYPE.image,
+          image: { token: '__MERMAID_PNG__' },
+          // 私有元信息，仅在内存 / 上行链路中使用，不会发给飞书
+          _mermaid: codeText,
+          _mermaidHash: createMermaidHash(codeText),
+        });
+        i += 1;
+        continue;
+      }
       blocks.push(
         createBlockPayload({
           type: BLOCK_TYPE.code,

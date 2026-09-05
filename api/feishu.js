@@ -5,8 +5,10 @@ import {
   feishuToMarkdown,
   markdownToBlocks,
   inlineMarkdownToElements,
+  createCodeBlockPayload,
   BLOCK_TYPE,
 } from './feishu-md.js';
+import { renderMermaidToPng } from './mermaid-render.js';
 import {
   readManifest,
   writeManifest,
@@ -106,6 +108,80 @@ export function apiDelete(pathSuffix, token, body, query) {
 
 export function apiPatch(pathSuffix, token, body, query) {
   return apiRequest('PATCH', pathSuffix, token, { query, body });
+}
+
+/**
+ * 上传 PNG buffer 到飞书文档，返回 file_token。
+ * 走 multipart/form-data，不能复用 apiPost (JSON)。
+ *
+ * 用于本地 mermaid 渲染成 PNG 后上传，作为 A 方案失败时的 B 方案兜底。
+ *
+ * @param {Buffer} buffer - PNG buffer
+ * @param {string} fileName - 文件名，如 'diagram-abc123.png'
+ * @param {string} documentId - parent_node (docx_image 父文档)
+ * @param {string} token - user_access_token
+ * @returns {Promise<string>} file_token
+ */
+export async function uploadImage(buffer, fileName, documentId, token) {
+  if (!Buffer.isBuffer(buffer)) {
+    throw new Error('uploadImage: buffer 必须是 Buffer');
+  }
+  if (!fileName || typeof documentId !== 'string' || !token) {
+    throw new Error('uploadImage: fileName/documentId/token 必填');
+  }
+
+  // 构造 multipart/form-data body
+  const boundary = `----FeishuSync${Date.now()}${Math.random().toString(36).slice(2)}`;
+  const parts = [];
+
+  // 文本字段：file_name, parent_type, parent_node, size
+  const textFields = {
+    file_name: fileName,
+    parent_type: 'docx_image',
+    parent_node: documentId,
+    size: String(buffer.length),
+  };
+  for (const [name, value] of Object.entries(textFields)) {
+    parts.push(
+      Buffer.from(`--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="${name}"\r\n\r\n` +
+        `${value}\r\n`, 'utf8')
+    );
+  }
+
+  // 二进制字段：file
+  parts.push(
+    Buffer.from(`--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="file"; filename="${fileName}"\r\n` +
+      `Content-Type: image/png\r\n\r\n`, 'utf8')
+  );
+  parts.push(buffer);
+  parts.push(Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8'));
+
+  const body = Buffer.concat(parts);
+
+  const url = `${API_BASE}/drive/v1/medias/upload_all`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      'Content-Length': String(body.length),
+    },
+    body,
+  });
+
+  const data = await response.json();
+  if (!response.ok || (data.code !== undefined && data.code !== 0)) {
+    throw new Error(
+      `uploadImage 失败: HTTP ${response.status} code=${data.code} msg=${data.msg || ''}`
+    );
+  }
+  const fileToken = data.file_token || data.data?.file_token;
+  if (!fileToken) {
+    throw new Error(`uploadImage 响应缺 file_token: ${JSON.stringify(data).slice(0, 200)}`);
+  }
+  return fileToken;
 }
 
 export async function deleteRemoteDocument(documentId, token, fileType) {
@@ -592,8 +668,48 @@ async function deleteAllChildren(documentId, token) {
 
 export async function uploadMarkdownToDocument(documentId, token, markdown) {
   const { blocks } = markdownToBlocks(markdown);
+  await resolveMermaidPlaceholderBlocks(blocks, documentId, token);
   await deleteAllChildren(documentId, token);
   await appendBlocksWithTables(documentId, token, blocks);
+}
+
+/**
+ * 处理 markdownToBlocks 产生的 mermaid image 占位块（Batch 1，B 方案）：
+ * 渲染 PNG → 上传飞书 → 替换为真正的 image block。
+ * 任一环节失败则降级为原样 mermaid 代码块，保证整个文档同步不中断。
+ *
+ * A 方案（diagram block）落地后，优先路径将在这里先尝试 diagram，
+ * 失败再走本函数的 PNG 路径。
+ *
+ * @param {Array<object>} blocks - markdownToBlocks 输出的 block 数组（原地修改）
+ * @param {string} documentId - 目标飞书文档 id（作为上传 parent_node）
+ * @param {string} token - user_access_token
+ */
+async function resolveMermaidPlaceholderBlocks(blocks, documentId, token) {
+  if (!Array.isArray(blocks)) return;
+  for (let idx = 0; idx < blocks.length; idx += 1) {
+    const block = blocks[idx];
+    if (!block || typeof block._mermaid !== 'string') continue;
+    const source = block._mermaid;
+    const hash = block._mermaidHash || '';
+    try {
+      const png = await renderMermaidToPng(source);
+      const fileName = `mermaid-${hash || Date.now().toString(36)}.png`;
+      const fileToken = await uploadImage(png, fileName, documentId, token);
+      // 替换占位块为干净的 image block（剥掉 _mermaid 私有字段）
+      blocks[idx] = {
+        block_type: BLOCK_TYPE.image,
+        image: { token: fileToken },
+      };
+      console.log(`[diagram] mermaid block rendered & uploaded (${fileName}, ${png.length} bytes)`);
+    } catch (err) {
+      // 降级：保留原 mermaid 源码为普通代码块
+      console.warn(
+        `[diagram] mermaid render/upload failed, fallback to code block: ${err.message || err}`
+      );
+      blocks[idx] = createCodeBlockPayload(source);
+    }
+  }
 }
 
 export async function createDocumentFromMarkdown(spaceId, token, markdown, parentWikiToken) {
@@ -613,6 +729,7 @@ export async function createDocumentFromMarkdown(spaceId, token, markdown, paren
         ...blocks,
       ];
 
+  await resolveMermaidPlaceholderBlocks(contentBlocks, documentId, token);
   await appendBlocksWithTables(documentId, token, contentBlocks);
   await addDocToWiki(spaceId, token, documentId, parentWikiToken);
   return documentId;
