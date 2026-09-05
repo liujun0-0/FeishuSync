@@ -1076,6 +1076,12 @@ export function createChangeProcessor({
 
     const fileToDoc = new Map();
     const usedPaths = new Set();
+    // 防幽灵副本守卫（full-sync 路径）：已被跟踪的标题集合。
+    const trackedTitles = new Set(
+      Object.values(manifestDocs)
+        .map((e) => (e?.title || '').toLowerCase())
+        .filter(Boolean)
+    );
     for (const [docId, entry] of Object.entries(manifestDocs)) {
       if (entry?.file) {
         fileToDoc.set(entry.file, docId);
@@ -1112,6 +1118,17 @@ export function createChangeProcessor({
       const entry = manifestDocs[docId];
       const title = meta.title || entry?.title || '';
       const revisionId = meta.revision_id ?? meta.revisionId ?? entry?.revisionId ?? null;
+      // 防幽灵副本守卫：未跟踪 docId + 标题已被其他文档跟踪 = wiki 侧重复文档。
+      // 不跳过的话，每个 revision-check 周期都会把它重新下载成 -N 本地副本。
+      // 注意：必须用 logEvents 门控，否则重复文档存续期间每分钟刷屏。
+      if (!entry && title && trackedTitles.has(title.toLowerCase())) {
+        if (logEvents) {
+          console.log(
+            `[realtime-sync] skip duplicate wiki doc ${docId} titled "${title}" (ghost-duplicate guard)`
+          );
+        }
+        continue;
+      }
       const baseName = sanitizeFilename(title) || docId;
       const desiredName = `${baseName}.md`;
       let fileRel = entry?.file;
@@ -1369,9 +1386,11 @@ export async function syncNewDocsFromWiki({
     const title = meta.title || node.title || '';
     const titleKey = title.toLowerCase();
     if (title && trackedTitles.has(titleKey)) {
-      console.warn(
-        `[realtime-sync] skip duplicate wiki doc ${docId} titled "${title}" (ghost-duplicate guard)`
-      );
+      if (logEvents) {
+        console.log(
+          `[realtime-sync] skip duplicate wiki doc ${docId} titled "${title}" (ghost-duplicate guard)`
+        );
+      }
       continue;
     }
     const revisionId = meta.revision_id ?? meta.revisionId ?? null;
