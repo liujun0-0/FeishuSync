@@ -28,9 +28,13 @@ const { title: t3, blocks: b3 } = markdownToBlocks(md3);
 check('含 mermaid 时能正常提取 H1', t3 === 'T');
 check('含 mermaid 时 blocks 数 >= 3（heading + mermaid code + js code）', b3.length >= 3, `got ${b3.length}`);
 const mermaidBlock = b3.find((b) => b.code && b.textElements?.some?.((t) => false));
-// 简化：mermaid 块应该 block_type=14 (code)
-const codeBlocks = b3.filter((b) => b.block_type === 14);
-check('mermaid + js 都解析为 block_type=14 (code)', codeBlocks.length === 2, `got ${codeBlocks.length}`);
+// mermaid 应解析为 block_type=40 (飞书画板块)；js 仍为 block_type=14 (code)
+const mermaidBoard = b3.find((b) => b.block_type === 40);
+const jsCode = b3.find((b) => b.block_type === 14);
+check('mermaid 解析为 block_type=40 (画板块)', !!mermaidBoard, `got block_type=${mermaidBoard?.block_type}`);
+check('js 仍为 block_type=14 (代码块)', !!jsCode, `got block_type=${jsCode?.block_type}`);
+check('mermaid component_type_id 正确', mermaidBoard?.add_ons?.component_type_id === 'blk_631fefbbae02400430b8f9f4');
+check('mermaid source 保留完整', mermaidBoard?.add_ons?.record && JSON.parse(mermaidBoard.add_ons.record).data.includes('A --> B'));
 
 // 4. import_task 响应解析（模拟 SDK 响应）
 const sampleImportResponse = {

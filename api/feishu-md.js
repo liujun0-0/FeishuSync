@@ -22,7 +22,12 @@ export const BLOCK_TYPE = {
   table: 31,
   table_cell: 32,
   quote_container: 34,
+  add_ons: 40,   // 插件块（飞书画板 Mermaid/PlantUML）
 };
+
+// 飞书画板块中 Mermaid 插件的 component_type_id
+// 飞书 board-v1 API 提供的 Mermaid 绘图插件 ID
+export const MERMAID_COMPONENT_ID = 'blk_631fefbbae02400430b8f9f4';
 
 function safeDecodeUrl(value) {
   if (!value) return '';
@@ -121,6 +126,7 @@ function blockTypeFromBlock(block) {
   if (block.table) return BLOCK_TYPE.table;
   if (block.table_cell) return BLOCK_TYPE.table_cell;
   if (block.quote_container) return BLOCK_TYPE.quote_container;
+  if (block.add_ons) return BLOCK_TYPE.add_ons;
   return null;
 }
 
@@ -225,6 +231,32 @@ function renderBlock(block, blockMap, indentLevel = 0, options = {}) {
             lines.push(`> ${line}`);
           }
         }
+      }
+      break;
+    }
+    case BLOCK_TYPE.add_ons: {
+      // 插件块（飞书画板 Mermaid）→ 反向提取源码写回 ```mermaid
+      // record 是 JSON 字符串：{"data":"mermaid源码","theme":"...","view":"..."}
+      const addOn = block.add_ons || {};
+      if (addOn.component_type_id === MERMAID_COMPONENT_ID) {
+        try {
+          const record = JSON.parse(addOn.record || '{}');
+          if (record.data) {
+            lines.push('```mermaid');
+            lines.push(record.data);
+            lines.push('```');
+          }
+        } catch {
+          // record 解析失败 → 原样保留代码块
+          lines.push('```mermaid');
+          lines.push(addOn.record || '');
+          lines.push('```');
+        }
+      } else {
+        // 非 Mermaid 插件块 → 保留为代码块
+        lines.push('```plugin');
+        lines.push(addOn.record || JSON.stringify(addOn));
+        lines.push('```');
       }
       break;
     }
@@ -643,6 +675,7 @@ export function markdownToBlocks(markdown) {
 
     if (trimmed.startsWith('```')) {
       flushParagraph();
+      const lang = trimmed.slice(3).trim().toLowerCase();
       i += 1;
       const codeLines = [];
       while (i < lines.length && !lines[i].trim().startsWith('```')) {
@@ -650,6 +683,27 @@ export function markdownToBlocks(markdown) {
         i += 1;
       }
       const codeText = codeLines.join('\n');
+
+      if (lang === 'mermaid') {
+        // Mermaid → 飞书画板块（block_type=40 插件块）。
+        // 飞书 board-v1 API 原生支持：block_type=40 + component_type_id=mermaid插件
+        // record 字段必须是 JSON 字符串，包含 data(源码) + theme + view
+        // 成功时飞书侧渲染为可视化画板；失败时由 appendBlocks 降级处理
+        blocks.push({
+          block_type: BLOCK_TYPE.add_ons,
+          add_ons: {
+            component_type_id: MERMAID_COMPONENT_ID,
+            record: JSON.stringify({
+              data: codeText,
+              theme: 'default',
+              view: 'codeChart',
+            }),
+          },
+        });
+        i += 1;
+        continue;
+      }
+
       blocks.push(
         createBlockPayload({
           type: BLOCK_TYPE.code,
