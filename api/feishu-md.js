@@ -684,7 +684,12 @@ export function markdownToBlocks(markdown) {
       }
       const codeText = codeLines.join('\n');
 
-      if (lang === 'mermaid') {
+      // 检测 mermaid：语言标签 "mermaid" 或裸 ``` 时按首行关键词推断
+      const MERMAID_KEYWORDS = /^(flowchart|graph|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt|pie|journey|gitGraph|mindmap|requirement|quadrant|block-beta)/;
+      const isMermaid = lang === 'mermaid' || (
+        lang === '' && codeText.split('\n')[0]?.trim()?.match(MERMAID_KEYWORDS)
+      );
+      if (isMermaid) {
         // Mermaid → 飞书画板块（block_type=40 插件块）。
         // 飞书 board-v1 API 原生支持：block_type=40 + component_type_id=mermaid插件
         // record 字段必须是 JSON 字符串，包含 data(源码) + theme + view
