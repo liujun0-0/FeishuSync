@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import { readConfig, requireConfigValue, resolvePath } from '../config.js';
 import { readToken } from '../api/helpers.js';
-import { createDocumentFromMarkdown } from '../api/feishu.js';
+import { createDocument, uploadMarkdownToDocument } from '../api/feishu.js';
 
 if (typeof fetch !== 'function') {
   console.error('This CLI requires Node.js 18+ (global fetch).');
@@ -16,14 +16,20 @@ async function main() {
     process.exit(1);
   }
   const inputPath = resolvePath(inputPathArg);
-  const wikiSpaceId = requireConfigValue(config, 'wikiSpaceId');
-  const tokenPath = resolvePath(requireConfigValue(config, 'tokenPath'));
 
   const markdown = await fs.readFile(inputPath, 'utf8');
-  const token = await readToken(tokenPath);
+  const token = await readToken(resolvePath(requireConfigValue(config, 'tokenPath')));
 
-  const documentId = await createDocumentFromMarkdown(wikiSpaceId, token, markdown);
-  console.log(`Uploaded document: ${documentId}`);
+  // 从 markdown 提取 H1 标题作为飞书文档标题
+  const titleMatch = markdown.match(/^#\s+(.+)\s*$/m);
+  const title = titleMatch ? titleMatch[1].trim() : require('node:path').basename(inputPath, '.md');
+
+  // 创建文档（用 H1 标题，不用 import-{ts}.md）
+  const { documentId } = await createDocument(token, title);
+
+  // 用 block-by-block 路径上传（走我们的 mermaid→block_type=40 代码）
+  await uploadMarkdownToDocument(documentId, token, markdown);
+  console.log(`Uploaded: ${title} -> ${documentId}`);
 }
 
 main().catch((err) => {
