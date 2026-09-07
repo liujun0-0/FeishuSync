@@ -685,7 +685,8 @@ export function markdownToBlocks(markdown) {
       const codeText = codeLines.join('\n');
 
       // 检测 mermaid：语言标签 "mermaid" 或裸 ``` 时按首行关键词推断
-      const MERMAID_KEYWORDS = /^(flowchart|graph|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt|pie|journey|gitGraph|mindmap|requirement|quadrant|block-beta)/;
+      // 严格要求关键字后必须是空白/换行/结尾，避免 "flowchartDesign" 这种误判
+      const MERMAID_KEYWORDS = /^(flowchart|graph|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt|pie|journey|gitGraph|mindmap|requirement|quadrant|block-beta)(\s|$)/;
       const isMermaid = lang === 'mermaid' || (
         lang === '' && codeText.split('\n')[0]?.trim()?.match(MERMAID_KEYWORDS)
       );

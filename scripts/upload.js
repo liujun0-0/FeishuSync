@@ -28,7 +28,16 @@ async function main() {
   const { documentId } = await createDocument(token, title);
 
   // 用 block-by-block 路径上传（走我们的 mermaid→block_type=40 代码）
-  await uploadMarkdownToDocument(documentId, token, markdown);
+  // 失败时清理空 doc，避免留下半成品
+  try {
+    await uploadMarkdownToDocument(documentId, token, markdown);
+  } catch (err) {
+    try {
+      const { deleteRemoteDocument } = await import('../api/feishu.js');
+      await deleteRemoteDocument(documentId, token, 'docx');
+    } catch {}
+    throw err;
+  }
   console.log(`Uploaded: ${title} -> ${documentId}`);
 }
 
