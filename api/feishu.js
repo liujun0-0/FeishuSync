@@ -1385,6 +1385,10 @@ export async function syncNewDocsFromWiki({
 
     const title = meta.title || node.title || '';
     const titleKey = title.toLowerCase();
+    const baseName = sanitizeFilename(title) || docId;
+    const revisionId = meta.revision_id ?? meta.revisionId ?? null;
+
+    // 守卫 1（标题级）：标题已被 manifest 中的其他 docId 跟踪 → 克隆，跳过
     if (title && trackedTitles.has(titleKey)) {
       if (logEvents) {
         console.log(
@@ -1393,8 +1397,26 @@ export async function syncNewDocsFromWiki({
       }
       continue;
     }
-    const revisionId = meta.revision_id ?? meta.revisionId ?? null;
-    const baseName = sanitizeFilename(title) || docId;
+
+    // 守卫 2（路径匹配）：查找 manifest 里标题相同的条目。
+    // 若已有同标题文档在 manifest（路径可能在子目录），则跳过新建——
+    // 避免 sync 把已有子目录文档拉到根目录创建重复副本。
+    // （幽灵副本循环的根因：sync 发现 wiki doc 不在 manifest → 在根目录新建 →
+    //    manifest 记录根目录路径 → 下次事件驱动也用根目录路径 → 正常运行。
+    //    但如果 manifest 里有另一条指向子目录的同标题条目 → 两个路径独立存在）
+    const existingEntry = [...Object.values(manifestDocs)].find(
+      (e) => e?.title && e.title.toLowerCase() === titleKey
+        && e.file && !e.file.startsWith('import-')
+    );
+    if (existingEntry) {
+      if (logEvents) {
+        console.log(
+          `[realtime-sync] skip wiki doc ${docId} titled "${title}": already tracked at ${existingEntry.file} (path-match guard)`
+        );
+      }
+      continue;
+    }
+
     const fileRel = await ensureUniqueFilePathWithFs(rootDir, `${baseName}.md`, usedPaths);
     const fileAbs = path.join(rootDir, fileRel);
 
