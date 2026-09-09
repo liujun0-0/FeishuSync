@@ -1342,6 +1342,32 @@ export function createChangeProcessor({
   };
 }
 
+// 在 wikid/ 全目录递归查找指定文件名（不含根目录自身），返回完整路径或 null。
+// 用于 guard 3：避免为已有子目录文件在根目录再创建副本。
+async function findSubdirFile(rootDir, targetName) {
+  const lower = targetName.toLowerCase();
+  async function walk(dir) {
+    for (const it of await fs.readdir(dir, { withFileTypes: true })) {
+      const fp = path.join(dir, it.name);
+      if (it.isDirectory()) {
+        const found = await walk(fp);
+        if (found) return found;
+      } else if (it.name.toLowerCase() === lower) {
+        return fp;
+      }
+    }
+    return null;
+  }
+  // 只搜子目录，不搜根目录本身
+  for (const it of await fs.readdir(rootDir, { withFileTypes: true })) {
+    if (it.isDirectory()) {
+      const found = await walk(path.join(rootDir, it.name));
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
 export async function syncNewDocsFromWiki({
   rootDir,
   spaceId,
@@ -1401,9 +1427,6 @@ export async function syncNewDocsFromWiki({
     // 守卫 2（路径匹配）：查找 manifest 里标题相同的条目。
     // 若已有同标题文档在 manifest（路径可能在子目录），则跳过新建——
     // 避免 sync 把已有子目录文档拉到根目录创建重复副本。
-    // （幽灵副本循环的根因：sync 发现 wiki doc 不在 manifest → 在根目录新建 →
-    //    manifest 记录根目录路径 → 下次事件驱动也用根目录路径 → 正常运行。
-    //    但如果 manifest 里有另一条指向子目录的同标题条目 → 两个路径独立存在）
     const existingEntry = [...Object.values(manifestDocs)].find(
       (e) => e?.title && e.title.toLowerCase() === titleKey
         && e.file && !e.file.startsWith('import-')
@@ -1412,6 +1435,19 @@ export async function syncNewDocsFromWiki({
       if (logEvents) {
         console.log(
           `[realtime-sync] skip wiki doc ${docId} titled "${title}": already tracked at ${existingEntry.file} (path-match guard)`
+        );
+      }
+      continue;
+    }
+
+    // 守卫 3（文件系统扫描）：扫描 wikid/ 全目录，看是否有同名 .md
+    // 文件已存在于子目录里（可能是备份恢复、手动创建、或 manifest 被清后残留）。
+    // 有则跳过，避免在根目录再创建一份。
+    const subTitleFile = await findSubdirFile(rootDir, `${baseName}.md`);
+    if (subTitleFile) {
+      if (logEvents) {
+        console.log(
+          `[realtime-sync] skip wiki doc ${docId} titled "${title}": local file exists at ${path.relative(rootDir, subTitleFile)}`
         );
       }
       continue;
