@@ -487,6 +487,82 @@ function buildCellTextBlocks(content) {
   return blocks;
 }
 
+// 计算表格列宽（像素）。
+// 策略：
+//   1. 统计每列最大内容长度（中文字符算 2，ASCII 算 1）
+//   2. 理想宽度 = maxLen * charWidth + padding
+//   3. 若总宽度 ≤ baseWidth → 按比例放大到 baseWidth
+//   4. 若总宽度 > baseWidth → 超宽列保持原宽，剩余空间按比例分配给窄列
+function calculateColumnWidths(rows, rowSize, columnSize, baseWidth = 800, minColWidth = 60) {
+  if (!columnSize) return [];
+
+  const CHAR_WIDTH = 7;   // 平均字符宽度（像素）
+  const PADDING = 16;     // 单元格左右内边距合计
+
+  // 统计每列最大"加权长度"（中文算 2，ASCII 算 1）
+  const maxLens = new Array(columnSize).fill(0);
+  for (let r = 0; r < rowSize; r += 1) {
+    for (let c = 0; c < columnSize; c += 1) {
+      const cell = (rows[r] && rows[r][c]) || '';
+      // 加权长度：中文/全角字符算 2，其余算 1
+      let weighted = 0;
+      for (const ch of cell) {
+        weighted += ch.charCodeAt(0) > 0x2e80 ? 2 : 1;
+      }
+      // 多行取最长行
+      const lines = cell.split('\n');
+      for (const line of lines) {
+        let lw = 0;
+        for (const ch of line) {
+          lw += ch.charCodeAt(0) > 0x2e80 ? 2 : 1;
+        }
+        if (lw > weighted) weighted = lw;
+      }
+      if (weighted > maxLens[c]) maxLens[c] = weighted;
+    }
+  }
+
+  // 理想宽度 = 加权长度 × 字符宽度 + 内边距
+  const idealWidths = maxLens.map((len) => Math.max(len * CHAR_WIDTH + PADDING, minColWidth));
+  const totalIdeal = idealWidths.reduce((a, b) => a + b, 0);
+
+  if (totalIdeal <= baseWidth) {
+    // 放得下 → 按比例放大，让表格撑满文档宽度
+    const scale = baseWidth / totalIdeal;
+    return idealWidths.map((w) => Math.round(w * scale));
+  }
+
+  // 放不下 → 超宽列保持原宽，剩余空间按比例分给窄列
+  // 先标记超宽列（理想宽度 > baseWidth/columnSize × 1.5 的列）
+  const avgIdeal = baseWidth / columnSize;
+  const wideThreshold = avgIdeal * 1.5;
+
+  let wideTotal = 0;
+  let narrowCount = 0;
+  for (let c = 0; c < columnSize; c += 1) {
+    if (idealWidths[c] > wideThreshold) {
+      wideTotal += idealWidths[c];
+    } else {
+      narrowCount += 1;
+    }
+  }
+
+  if (narrowCount === 0) {
+    // 全是超宽列 → 按比例缩放
+    const scale = baseWidth / totalIdeal;
+    return idealWidths.map((w) => Math.round(w * scale));
+  }
+
+  // 剩余空间分给窄列
+  const narrowBudget = Math.max(baseWidth - wideTotal, narrowCount * minColWidth);
+  const narrowShare = narrowBudget / narrowCount;
+
+  return idealWidths.map((w) => {
+    if (w > wideThreshold) return Math.round(w);
+    return Math.round(Math.max(narrowShare, minColWidth));
+  });
+}
+
 async function createTableWithContent(documentId, token, tableBlock, index) {
   const rows = tableBlock._table?.rows || [];
   const rowSize = tableBlock.table?.property?.row_size || rows.length;
@@ -552,6 +628,10 @@ async function createTableWithContent(documentId, token, tableBlock, index) {
     }
   }
 
+  // 计算列宽：根据每列最大内容长度自适应分配
+  // 基准总宽度 800px（飞书文档标准宽度），最小列宽 60px
+  const columnWidths = calculateColumnWidths(rows, rowSize, columnSize, 800, 60);
+
   // Table root goes first in descendants.
   descendants.unshift({
     block_id: tableId,
@@ -562,6 +642,7 @@ async function createTableWithContent(documentId, token, tableBlock, index) {
         column_size: columnSize,
         header_row: headerRow,
         header_column: false,
+        column_width: columnWidths,
       },
     },
     children: cellIds,
