@@ -1,41 +1,42 @@
 # FeishuSync
 
-FeishuSync is a CLI tool that bridges Feishu Docs/Wiki with a local folder. It can authenticate a user, fetch and convert documents, and keep a wiki space in sync with Markdown files on disk.
+飞书 Wiki ↔ 本地 Markdown 双向同步工具。
 
-## Requirements
-- Node.js 18+ (uses the global `fetch` API)
-- A Feishu app with user authorization enabled (client ID/secret)
-- A Wiki Space ID you have access to
+## 功能
 
-## Setup
-1. Install dependencies:
-   ```bash
-   npm install
-   ```
-2. Create your config:
-   ```bash
-   cp config.example.json config.json
-   ```
-3. Edit `config.json` with your Feishu credentials and space ID.
+- **双向同步**：本地 `wikid/` 目录与飞书 Wiki 空间自动同步
+- **Mermaid 画板**：` ```mermaid ` 代码块自动渲染为飞书画板块（block_type=40）
+- **幽灵副本防护**：三重守卫防止重复文件产生
+- **Token 自愈**：auth 自动续期，token 过期时自动重试
+- **崩溃恢复**：watchdog 监督 auth + sync 进程，崩溃后 3 秒自动拉起
 
-## Quick start (preferred)
-Use the bundled start/stop helpers to keep auth + sync running in the background:
+## 快速开始
+
+### 1. 安装依赖
+
 ```bash
-npm start
-# later...
-npm stop
+git clone https://github.com/liujun0-0/FeishuSync.git
+cd FeishuSync
+npm install
 ```
 
-## Configuration
-`config.json` supports:
+### 2. 配置
+
+复制配置模板并填入你的飞书应用信息：
+
+```bash
+cp config.example.json config.json
+```
+
+编辑 `config.json`：
 
 ```json
 {
   "tokenPath": "./user-token.txt",
-  "wikiSpaceId": "1234567890",
+  "wikiSpaceId": "你的飞书知识库空间ID",
   "auth": {
-    "clientId": "cli_abc123",
-    "clientSecret": "abcABC123"
+    "clientId": "cli_你的应用ID",
+    "clientSecret": "你的应用密钥"
   },
   "sync": {
     "folderPath": "wikid",
@@ -45,59 +46,124 @@ npm stop
 }
 ```
 
-Notes:
-- `tokenPath` is where the auth script writes the user access token.
-- `sync.folderPath` is the local folder for Markdown files.
-- `pollIntervalSeconds` can be `0`/`false` to disable polling; realtime updates still use websockets.
-- You can also set `FEISHU_APP_ID` / `FEISHU_APP_SECRET` to override `auth.clientId` / `auth.clientSecret`.
+**获取配置值：**
+- `auth.clientId` / `auth.clientSecret`：飞书开放平台 → 你的应用 → 凭证与基础信息
+- `wikiSpaceId`：飞书知识库 → 知识库设置 → 空间 ID（URL 里的那串 ID）
 
-## Commands
-All commands are available as npm scripts:
+### 3. 首次授权
 
-- `npm run auth`  
-  Starts a local auth server, opens a browser, and writes the access token to `tokenPath`.
-
-- `npm run list`  
-  Lists the wiki space tree (title + document token).
-
-- `npm run fetch <doc-url-or-id>`  
-  Prints a document’s metadata and blocks JSON to stdout.
-
-- `npm run download <doc-url-or-id>`  
-  Downloads a document as Markdown into the current directory.
-
-- `npm run upload <markdown-file>`  
-  Creates a new document in the configured wiki space from a Markdown file.
-
-- `npm run convert to-md <json-file|->`  
-  Converts Feishu JSON (from `fetch`) to Markdown. Use `-` to read from stdin.
-
-- `npm run convert to-feishu <markdown-file|->`  
-  Converts Markdown to Feishu JSON.
-
-- `npm run update`  
-  One-shot bidirectional sync between the wiki space and local folder.
-  - Creates `.feishu-sync.json` in the sync folder to track hashes/revisions.
-  - If both local and remote changed, the remote copy is saved as `*.remote.md`.
-
-- `npm run sync`  
-  Realtime sync with websockets + optional polling. Also watches the local folder for changes.
-
-- `npm start` / `npm stop`  
-  Convenience wrapper to run `auth` and `sync` as detached background processes.
-
-## Example workflow
 ```bash
-# Authenticate
 npm run auth
-
-# One-time sync
-npm run update
-
-# Continuous sync
-npm run sync
 ```
 
-## Troubleshooting
-- If you see “Token file is empty”, run `npm run auth` again.
-- If sync fails to start, verify `wikiSpaceId` and the app credentials in `config.json`.
+浏览器会自动打开飞书授权页面，点击"授权"即可。授权后 token 会保存到 `user-token.txt`，后续自动续期（约 30 天需要重新授权一次）。
+
+### 4. 启动同步
+
+```bash
+npm start
+```
+
+这会启动三个进程：
+- `auth.js` — token 自动续期（每 84 分钟）
+- `sync.js` — 常驻同步主进程（WebSocket + 轮询）
+- `watchdog.js` — 进程监督（崩溃后自动重启）
+
+### 5. 开机自启（Windows）
+
+将 `_autostart_watchdog.cmd` 的快捷方式放到 Windows 启动文件夹：
+
+```powershell
+# 打开启动文件夹
+shell:startup
+
+# 复制快捷方式
+Copy-Item "_autostart_watchdog.cmd" "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\"
+```
+
+## 常用命令
+
+| 命令 | 说明 |
+|---|---|
+| `npm start` | 启动守护模式（auth + sync + watchdog） |
+| `npm run stop` | 停止所有进程 |
+| `npm run auth` | 手动重新授权 |
+| `npm run upload <md>` | 上传单个 markdown 到飞书 |
+| `npm run download <docId>` | 从飞书下载文档 |
+| `npm run update` | 单次全量同步 |
+| `npm run sync` | 常驻同步（不带 watchdog） |
+| `npm run list` | 列出 wiki 空间树 |
+| `npm run fetch <docId>` | 拉取文档元数据和块 JSON |
+
+## 目录结构
+
+```
+FeishuSync/
+├── config.json           ← 你的配置（不提交到 git）
+├── config.example.json   ← 配置模板
+├── user-token.txt        ← OAuth token（不提交）
+├── .feishu-sync-refresh-token  ← refresh token（不提交）
+├── wikid/                ← 本地 Markdown 镜像（不提交）
+│   ├── .feishu-sync.json ← manifest（docId↔文件映射）
+│   └── 飞书深诺文档集合/
+│       ├── 技术分享.md
+│       └── 飞书深诺技术文档/
+│           ├── BSP接口转发方案-v5.1.md
+│           └── ...
+├── api/                  ← 核心模块
+│   ├── feishu.js         ← 飞书 API 封装
+│   ├── feishu-md.js      ← Markdown ↔ 飞书块转换
+│   ├── helpers.js        ← 工具函数
+│   └── merge.js          ← 冲突合并
+├── scripts/              ← 脚本
+│   ├── auth.js           ← OAuth 认证
+│   ├── sync.js           ← 同步主进程
+│   ├── watchdog.js       ← 进程监督
+│   ├── upload.js         ← 单文件上传
+│   ├── download.js       ← 单文件下载
+│   └── cleanup-stubs.mjs ← 幽灵副本清理
+├── index.js              ← start/stop 入口
+├── package.json
+└── _autostart_watchdog.cmd  ← Windows 开机自启
+```
+
+## 故障排查
+
+### 查看日志
+
+```bash
+# 同步状态
+tail logs/sync.log
+
+# auth 状态
+tail logs/auth.log
+
+# watchdog 状态
+tail logs/watchdog.log
+```
+
+### 常见问题
+
+| 问题 | 解决 |
+|---|---|
+| sync.log 报 `99991677` | token 过期，等 auth 自动续期或 `npm run auth` |
+| 浏览器弹出授权页面 | refresh_token 过期（约 30 天一次），点授权即可 |
+| 出现 `-N` 后缀文件 | 运行 `node scripts/cleanup-stubs.mjs --dry-run` 检查 |
+| sync 崩溃 | watchdog 会自动重启，检查 `logs/watchdog.log` |
+| 文件在根目录不在子目录 | sync 设计限制，可手动移动文件并更新 manifest |
+
+## 支持的图表格式
+
+| 格式 | 飞书渲染 |
+|---|---|
+| `flowchart` / `graph` | 画板块（block_type=40） |
+| `sequenceDiagram` | 画板块 |
+| `classDiagram` / `stateDiagram` / `erDiagram` | 画板块 |
+| `gantt` / `pie` / `mindmap` / `journey` | 画板块 |
+| `plantuml` / `kroki` / `dot` | 代码块（源码保留） |
+
+检测方式：语言标签 `mermaid` 或裸 ` ``` ` 块首行匹配关键词。
+
+## License
+
+MIT

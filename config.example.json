@@ -1,9 +1,9 @@
 {
   "tokenPath": "./user-token.txt",
-  "wikiSpaceId": "1234567890",
+  "wikiSpaceId": "你的飞书知识库空间ID",
   "auth": {
-    "clientId": "cli_abc123",
-    "clientSecret": "abcABC123"
+    "clientId": "cli_你的应用ID",
+    "clientSecret": "你的应用密钥"
   },
   "sync": {
     "folderPath": "wikid",
