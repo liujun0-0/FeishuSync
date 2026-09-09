@@ -100,6 +100,8 @@ function buildAuthUrl(clientId) {
   return url.toString();
 }
 
+const AUTH_TIMEOUT_MS = 5 * 60 * 1000; // 5 分钟超时——用户关了浏览器没授权也不会永远卡住
+
 async function waitForAuthCode(clientId) {
   if (pendingCodeResolve) {
     throw new Error('Authorization already in progress');
@@ -107,22 +109,32 @@ async function waitForAuthCode(clientId) {
 
   const authUrl = buildAuthUrl(clientId);
 
-  // Write the URL to a file so the user can find it even if the console output
-  // is lost or the auto-open fails. This is critical for the "auth stuck" scenario.
+  // 写到文件，方便用户找到链接（即使控制台输出丢失或浏览器没自动打开）
   await fs.writeFile(AUTH_URL_FILE, [
-    `# FeishuSync Authorization Required`,
-    `# Time: ${new Date().toISOString()}`,
+    `# FeishuSync 需要重新授权`,
+    `# 时间: ${new Date().toISOString()}`,
     `#`,
-    `# Open this URL in your browser to re-authorize:`,
+    `# 在浏览器中打开以下链接完成授权：`,
     authUrl,
     '',
   ].join('\n'), 'utf8');
 
-  console.log('Authorization URL:', authUrl);
+  console.log('[auth] 需要重新授权。浏览器已打开。如果没自动打开，请打开 feishu-auth-url.txt');
+  console.log('[auth] 等待授权... (5分钟内有效)');
   openInBrowser(authUrl);
 
   return new Promise((resolve) => {
-    pendingCodeResolve = resolve;
+    const timer = setTimeout(() => {
+      if (pendingCodeResolve === resolve) {
+        pendingCodeResolve = null;
+        resolve({ error: 'timeout' });
+      }
+    }, AUTH_TIMEOUT_MS);
+
+    pendingCodeResolve = (result) => {
+      clearTimeout(timer);
+      resolve(result);
+    };
   });
 }
 
@@ -249,8 +261,15 @@ async function main() {
         const result = await waitForAuthCode(clientId);
         if (result.error) {
           if (result.error === 'shutdown') break;
-          console.log('[auth] Authorization was denied. Try again.');
+          if (result.error === 'timeout') {
+            console.log('[auth] 授权超时。60秒后重试...');
+            await sleep(60_000);
+            lastAuthUrlLogged = false;
+            continue;
+          }
+          console.log('[auth] 授权被拒绝。60秒后重试...');
           lastAuthUrlLogged = false;
+          await sleep(60_000);
           continue;
         }
 
