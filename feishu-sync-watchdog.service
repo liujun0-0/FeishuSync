@@ -1,0 +1,13 @@
+[Unit]
+Description=FeishuSync Watchdog (auth + sync)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/FeishuSync
+ExecStart=/usr/bin/node scripts/watchdog.js
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

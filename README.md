@@ -4,6 +4,7 @@
 
 ## 功能
 
+- **跨平台**：支持 Windows / macOS / Linux（Node.js 18+）
 - **双向同步**：本地 `wikid/` 目录与飞书 Wiki 空间自动同步
 - **Mermaid 画板**：` ```mermaid ` 代码块自动渲染为飞书画板块（block_type=40）
 - **幽灵副本防护**：三重守卫防止重复文件产生
@@ -69,16 +70,37 @@ npm start
 - `sync.js` — 常驻同步主进程（WebSocket + 轮询）
 - `watchdog.js` — 进程监督（崩溃后自动重启）
 
-### 5. 开机自启（Windows）
+### 5. 开机自启
 
-将 `_autostart_watchdog.cmd` 的快捷方式放到 Windows 启动文件夹：
+**Windows：**
+
+将 `_autostart_watchdog.cmd` 的快捷方式放到启动文件夹：
 
 ```powershell
-# 打开启动文件夹
 shell:startup
-
-# 复制快捷方式
 Copy-Item "_autostart_watchdog.cmd" "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\"
+```
+
+**macOS（launchd）：**
+
+```bash
+chmod +x _autostart_watchdog.sh
+cp _autostart_watchdog.sh ~/Library/LaunchAgents/feishu-sync-watchdog.sh
+# 或创建 launchd plist（更标准）
+```
+
+**Linux（systemd）：**
+
+```bash
+chmod +x _autostart_watchdog.sh
+# 方式 1：直接运行
+./_autostart_watchdog.sh
+
+# 方式 2：systemd 用户服务（推荐）
+cp feishu-sync-watchdog.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable feishu-sync-watchdog
+systemctl --user start feishu-sync-watchdog
 ```
 
 ## 常用命令
