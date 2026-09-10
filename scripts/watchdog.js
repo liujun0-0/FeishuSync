@@ -178,6 +178,17 @@ async function start() {
   log('[watchdog] supervising auth & sync; use `node index.js stop` or kill the watchdog pid to stop.');
 }
 
+// Global error handlers — prevent V8/libuv assertion crashes from killing
+// the watchdog. If the watchdog dies, auth and sync children become orphans
+// without supervision. Log and keep running.
+process.on('uncaughtException', (err) => {
+  log(`[watchdog] uncaughtException (swallowed): ${err.message || err}`);
+});
+process.on('unhandledRejection', (reason) => {
+  const msg = reason && (reason.message || reason) || 'unknown';
+  log(`[watchdog] unhandledRejection (swallowed): ${msg}`);
+});
+
 start().catch((err) => {
   console.error(`[watchdog] fatal: ${err.message || err}`);
   process.exit(1);

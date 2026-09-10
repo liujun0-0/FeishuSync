@@ -310,6 +310,16 @@ async function main() {
   }
 }
 
+// Global error handlers — prevent V8/libuv assertion crashes from killing the
+// auth process during token refresh or browser callback handling.
+process.on('uncaughtException', (err) => {
+  console.error('[auth] uncaughtException (swallowed):', err && (err.message || err));
+});
+process.on('unhandledRejection', (reason) => {
+  const msg = reason && (reason.message || reason) || 'unknown';
+  console.error('[auth] unhandledRejection (swallowed):', msg);
+});
+
 main().catch((err) => {
   console.error(err.message || err);
   process.exit(1);

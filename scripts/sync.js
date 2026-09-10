@@ -282,6 +282,19 @@ async function main() {
   await wsClient.start({ eventDispatcher: dispatcher });
 }
 
+// Global error handlers — prevent V8/libuv assertion crashes from killing the
+// sync process. When token expires mid-fetch, the cleanup of async handles can
+// trigger `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)` which would
+// otherwise kill the entire process. These handlers swallow such errors and
+// keep sync alive; the next poll cycle will recover.
+process.on('uncaughtException', (err) => {
+  console.error('[realtime-sync] uncaughtException (swallowed):', err && (err.message || err));
+});
+process.on('unhandledRejection', (reason) => {
+  const msg = reason && (reason.message || reason) || 'unknown';
+  console.error('[realtime-sync] unhandledRejection (swallowed):', msg);
+});
+
 main().catch((err) => {
   console.error(err.message || err);
   process.exit(1);
