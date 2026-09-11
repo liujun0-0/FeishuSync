@@ -1367,50 +1367,28 @@ export function createChangeProcessor({
       const exists = await fileExists(fileAbs);
 
       if (!exists) {
+        // 本地文件不存在：直接删除飞书文档（不 soft-delete）。
+        //
+        // 为什么不用 soft-delete / pendingDelete？
+        // 因为这里触发的删除会被 syncNewDocsFromWiki 的 wiki 树遍历"抵消"：
+        // 删了飞书文档 → wiki 树还有 → sync 下一轮重新下载 → 循环。
+        // 所以本地→远程删除必须是确定性的：用户删了就真删。
+        //
+        // 如果用户想恢复：从飞书回收站（30天内）恢复即可。
         if (docId) {
           const entry = manifestDocs[docId];
-          // 软删除策略：本地文件不存在时，先标记为 pendingDelete
-          // 而不是直接删飞书。给用户一个恢复窗口期（默认 7 天）。
-          // 在窗口期内如果本地文件恢复（从 soft-trash 移回或重新编辑），
-          // 取消 pendingDelete，跳过实际删除。
-          const PENDING_DELETE_GRACE_MS = 7 * 24 * 60 * 60 * 1000; // 7 天
-          const now = Date.now();
-          if (!entry.pendingDeleteAt) {
-            // 第一次发现本地缺失：标记 pendingDelete，记录时间
-            manifestDocs[docId] = {
-              ...entry,
-              pendingDeleteAt: now,
-            };
-            console.warn(
-              `[realtime-sync] local file missing for tracked doc ${docId} (${entry?.file}); ` +
-              `marking as pendingDelete. Will be deleted from feishu after grace period ` +
-              `(${PENDING_DELETE_GRACE_MS / 1000 / 86400} days). ` +
-              `Restore the local file to cancel the deletion.`
+          console.warn(
+            `[realtime-sync] local file missing for tracked doc ${docId} (${entry?.file}); ` +
+            `deleting from feishu (user-initiated delete).`
+          );
+          try {
+            await deleteRemoteDocument(docId, token, resolveFileType(null, entry));
+          } catch (err) {
+            console.error(
+              `[realtime-sync] failed to delete remote ${docId}: ${err.message}`
             );
-          } else if (now - entry.pendingDeleteAt > PENDING_DELETE_GRACE_MS) {
-            // 超过宽限期：真的删飞书
-            console.warn(
-              `[realtime-sync] grace period expired for ${docId} (${entry?.file}); ` +
-              `deleting from feishu now.`
-            );
-            try {
-              await deleteRemoteDocument(docId, token, resolveFileType(null, entry));
-            } catch (err) {
-              console.error(
-                `[realtime-sync] failed to delete remote ${docId}: ${err.message}`
-              );
-            }
-            delete manifestDocs[docId];
-          } else {
-            // 宽限期内：什么都不做，等下次 sync
-            const remainMs = PENDING_DELETE_GRACE_MS - (now - entry.pendingDeleteAt);
-            const remainDays = (remainMs / 1000 / 86400).toFixed(1);
-            if (Math.random() < 0.01) {  // 偶尔提醒一次，避免每轮刷屏
-              console.log(
-                `[realtime-sync] ${docId} pending delete, ${remainDays} days remaining`
-              );
-            }
           }
+          delete manifestDocs[docId];
           manifestDirty = true;
         }
         continue;
@@ -1517,9 +1495,9 @@ export function createChangeProcessor({
   };
 }
 
-// 在 wikid/ 全目录递归查找指定文件名（不含根目录自身），返回完整路径或 null。
-// 用于 guard 3：避免为已有子目录文件在根目录再创建副本。
-async function findSubdirFile(rootDir, targetName) {
+// 在 wikid/ 全目录递归查找指定文件名（包括根目录），返回完整路径或 null。
+// 用于 guard 3：避免为已有文件在任何位置再创建副本。
+async function findFileInTree(rootDir, targetName) {
   const lower = targetName.toLowerCase();
   async function walk(dir) {
     for (const it of await fs.readdir(dir, { withFileTypes: true })) {
@@ -1533,14 +1511,7 @@ async function findSubdirFile(rootDir, targetName) {
     }
     return null;
   }
-  // 只搜子目录，不搜根目录本身
-  for (const it of await fs.readdir(rootDir, { withFileTypes: true })) {
-    if (it.isDirectory()) {
-      const found = await walk(path.join(rootDir, it.name));
-      if (found) return found;
-    }
-  }
-  return null;
+  return await walk(rootDir);
 }
 
 // 构建 wiki 树到本地路径的映射：docId → 本地子目录路径
@@ -1693,14 +1664,14 @@ export async function syncNewDocsFromWiki({
       continue;
     }
 
-    // 守卫 3（文件系统扫描）：扫描 wikid/ 全目录，看是否有同名 .md
-    // 文件已存在于子目录里（可能是备份恢复、手动创建、或 manifest 被清后残留）。
-    // 有则跳过，避免在根目录再创建一份。
-    const subTitleFile = await findSubdirFile(rootDir, `${baseName}.md`);
-    if (subTitleFile) {
+    // 守卫 3（文件系统扫描）：扫描 wikid/ 全目录（含根），看是否有同名 .md
+    // 文件已存在于任何位置（子目录、根目录、或 manifest 被清后残留）。
+    // 有则跳过，避免再创建重复文件。
+    const existingFile = await findFileInTree(rootDir, `${baseName}.md`);
+    if (existingFile) {
       if (logEvents) {
         console.log(
-          `[realtime-sync] skip wiki doc ${docId} titled "${title}": local file exists at ${path.relative(rootDir, subTitleFile)}`
+          `[realtime-sync] skip wiki doc ${docId} titled "${title}": local file exists at ${path.relative(rootDir, existingFile)}`
         );
       }
       continue;
