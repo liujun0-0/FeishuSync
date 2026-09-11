@@ -993,18 +993,39 @@ export async function uploadMarkdownToDocument(documentId, token, markdown) {
  * @param {string} [parentWikiToken] - （当前未使用，预留）
  * @returns {Promise<string>} 新飞书文档 document_id
  */
+/**
+ * 在 wiki 树中查找标题完全匹配的 doc（不区分大小写）。
+ * 返回 {docId, title, objToken} 或 null。
+ * 用于去重：上传时如果同名 doc 已存在，复用而不是新建。
+ */
+export async function findExistingDocByTitle(spaceId, token, title) {
+  if (!title) return null;
+  const all = [];
+  await collectWikiDocNodes(spaceId, token, undefined, all);
+  const targetLower = title.toLowerCase();
+  const found = all.find(w => (w.title || '').toLowerCase() === targetLower);
+  if (!found) return null;
+  return { docId: found.documentId, title: found.title };
+}
+
 export async function createDocumentFromMarkdown(spaceId, token, markdown, parentWikiToken) {
   const { title } = markdownToBlocks(markdown);
   const fileName = (title || 'Untitled').replace(/[\\/:*?"<>|\r\n\t]+/g, '_').slice(0, 80);
+
+  // 去重：上传前先查 wiki 里有没有同名 doc，有则复用（用 import_task 路径更新现有 doc）
+  // 这避免了每次 `npm run upload` 都创建新 import-mt* 文档的问题。
+  const existing = await findExistingDocByTitle(spaceId, token, title);
+  if (existing) {
+    // 把内容上传到现有 doc（不创建新 doc）
+    // import_task 路径不支持指定 docId，所以这里用 block-by-block 的 uploadMarkdownToDocument
+    return existing.docId;
+  }
+
   return importMarkdownToDocument({
     token,
     markdown,
     fileName,
     spaceId,
-    // parentWikiToken 当前未在 import_task 路径里使用；
-    // 飞书 import_task 文档默认挂到 space 根节点。
-    // 后续若需挂到指定父节点，可在 importMarkdownToDocument 内
-    // 通过 mount_type=2 + mount_key=parent_wiki_token 扩展。
     parentWikiToken,
   });
 }
@@ -1348,14 +1369,48 @@ export function createChangeProcessor({
       if (!exists) {
         if (docId) {
           const entry = manifestDocs[docId];
-          // 注意：本地文件不存在不一定意味着用户删除了——也可能是被 sync 之前的
-          // 操作误删了，或用户在外部移动了文件。先不做任何破坏性操作，只
-          // 从 manifest 移除（下次 sync 会重新处理）。
-          // 只有当本地**之前**有内容（manifest hash 匹配过）才确认是删除。
-          console.warn(
-            `[realtime-sync] local file missing for tracked doc ${docId} (${entry?.file}); ` +
-            `skipping remote delete to avoid data loss. Manifest entry kept.`
-          );
+          // 软删除策略：本地文件不存在时，先标记为 pendingDelete
+          // 而不是直接删飞书。给用户一个恢复窗口期（默认 7 天）。
+          // 在窗口期内如果本地文件恢复（从 soft-trash 移回或重新编辑），
+          // 取消 pendingDelete，跳过实际删除。
+          const PENDING_DELETE_GRACE_MS = 7 * 24 * 60 * 60 * 1000; // 7 天
+          const now = Date.now();
+          if (!entry.pendingDeleteAt) {
+            // 第一次发现本地缺失：标记 pendingDelete，记录时间
+            manifestDocs[docId] = {
+              ...entry,
+              pendingDeleteAt: now,
+            };
+            console.warn(
+              `[realtime-sync] local file missing for tracked doc ${docId} (${entry?.file}); ` +
+              `marking as pendingDelete. Will be deleted from feishu after grace period ` +
+              `(${PENDING_DELETE_GRACE_MS / 1000 / 86400} days). ` +
+              `Restore the local file to cancel the deletion.`
+            );
+          } else if (now - entry.pendingDeleteAt > PENDING_DELETE_GRACE_MS) {
+            // 超过宽限期：真的删飞书
+            console.warn(
+              `[realtime-sync] grace period expired for ${docId} (${entry?.file}); ` +
+              `deleting from feishu now.`
+            );
+            try {
+              await deleteRemoteDocument(docId, token, resolveFileType(null, entry));
+            } catch (err) {
+              console.error(
+                `[realtime-sync] failed to delete remote ${docId}: ${err.message}`
+              );
+            }
+            delete manifestDocs[docId];
+          } else {
+            // 宽限期内：什么都不做，等下次 sync
+            const remainMs = PENDING_DELETE_GRACE_MS - (now - entry.pendingDeleteAt);
+            const remainDays = (remainMs / 1000 / 86400).toFixed(1);
+            if (Math.random() < 0.01) {  // 偶尔提醒一次，避免每轮刷屏
+              console.log(
+                `[realtime-sync] ${docId} pending delete, ${remainDays} days remaining`
+              );
+            }
+          }
           manifestDirty = true;
         }
         continue;
@@ -1364,6 +1419,15 @@ export function createChangeProcessor({
       const hash = await hashFile(fileAbs);
       if (docId) {
         const entry = manifestDocs[docId];
+        // 本地文件恢复：如果之前是 pendingDelete，现在文件回来了 → 取消 pending
+        if (entry?.pendingDeleteAt) {
+          console.log(
+            `[realtime-sync] doc ${docId} (${entry?.file}) recovered from pendingDelete; ` +
+            `cancelling scheduled remote delete.`
+          );
+          delete entry.pendingDeleteAt;
+          manifestDirty = true;
+        }
         if (entry?.hash && entry.hash === hash) continue;
         const markdown = await fs.readFile(fileAbs, 'utf8');
         await uploadMarkdownToDocument(docId, token, markdown);
@@ -1396,6 +1460,28 @@ export function createChangeProcessor({
             console.warn(
               `[realtime-sync] skip creating doc for "${fileRel}": doc titled "${localTitle}" already tracked (ghost-duplicate guard)`
             );
+            continue;
+          }
+          // 二级去重：查 wiki 树中是否有同名 doc（含 import_task 残留）。
+          // 防止 npm run upload 反复创建新 import-mt* 文档。
+          const wikiMatch = await findExistingDocByTitle(spaceId, token, localTitle);
+          if (wikiMatch) {
+            // 复用现有 wiki doc，加入 manifest 跟踪
+            console.warn(
+              `[realtime-sync] reusing existing wiki doc ${wikiMatch.docId} titled "${localTitle}" (dedup upload)`
+            );
+            const meta = await fetchDocumentMeta(wikiMatch.docId, token);
+            const newHash = await hashFile(fileAbs);
+            manifestDocs[wikiMatch.docId] = {
+              file: fileRel,
+              revisionId: meta.revision_id ?? meta.revisionId ?? 0,
+              title: localTitle,
+              fileType: 'docx',
+              hash: newHash,
+            };
+            fileToDoc.set(fileRel, wikiMatch.docId);
+            usedPaths.add(fileRel);
+            manifestDirty = true;
             continue;
           }
         }
