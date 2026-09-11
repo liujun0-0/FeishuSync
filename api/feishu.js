@@ -1176,7 +1176,9 @@ export function createChangeProcessor({
         if (entry?.file) {
           localBatch.delete(entry.file);
           const fileAbs = path.join(rootDir, entry.file);
-          await deleteLocalFile(fileAbs);
+          // 软删除：移到 .feishu-sync-soft-trash/ 目录而非真删
+          // 用户可以从那里恢复（如果误删了飞书文档）
+          await softDeleteLocalFile(fileAbs, rootDir);
           manifestDirty = true;
         }
         if (manifestDocs[docId]) {
@@ -1346,8 +1348,14 @@ export function createChangeProcessor({
       if (!exists) {
         if (docId) {
           const entry = manifestDocs[docId];
-          await deleteRemoteDocument(docId, token, resolveFileType(null, entry));
-          delete manifestDocs[docId];
+          // 注意：本地文件不存在不一定意味着用户删除了——也可能是被 sync 之前的
+          // 操作误删了，或用户在外部移动了文件。先不做任何破坏性操作，只
+          // 从 manifest 移除（下次 sync 会重新处理）。
+          // 只有当本地**之前**有内容（manifest hash 匹配过）才确认是删除。
+          console.warn(
+            `[realtime-sync] local file missing for tracked doc ${docId} (${entry?.file}); ` +
+            `skipping remote delete to avoid data loss. Manifest entry kept.`
+          );
           manifestDirty = true;
         }
         continue;
@@ -1449,6 +1457,81 @@ async function findSubdirFile(rootDir, targetName) {
   return null;
 }
 
+// 构建 wiki 树到本地路径的映射：docId → 本地子目录路径
+// 例如 doc 在 "飞书深诺技术文档/设计方案-XXX/" 下 → 返回 "飞书深诺技术文档/设计方案-XXX"
+// 如果 doc 在根容器下（飞书深诺文档集合）→ 返回 "飞书深诺技术文档"（跳过根容器名）
+// 如果 doc 是 import_task 创建的（不在 wiki 树里）→ 返回 null（由调用方处理）
+//
+// 通过遍历 wiki 树，收集每个 doc 的完整路径。
+export async function buildWikiPathMap(spaceId, token) {
+  const map = new Map(); // obj_token → 本地子目录
+
+  // 找到根容器节点
+  const rootNodes = await fetchWikiNodes(spaceId, token, undefined);
+  if (rootNodes.length === 0) return map;
+
+  // 通常第一个根节点是空间本身（如 "飞书深诺文档集合"），跳过它
+  // 实际容器从它的子节点开始
+  const rootContainer = rootNodes[0];
+  const rootToken = rootContainer.node_token || rootContainer.nodeToken;
+
+  // 递归遍历
+  async function walk(parentNodeToken, currentPath) {
+    const children = await fetchWikiNodes(spaceId, token, parentNodeToken);
+    for (const child of children) {
+      const nodeToken = child.node_token || child.nodeToken;
+      const objToken = child.obj_token || child.objToken;
+      const title = child.title || child.name || '';
+      const hasChild = child.has_child ?? child.hasChild;
+
+      if (!objToken) continue;
+
+      // 容器的本地路径 = 当前路径
+      // 叶子文档的本地路径 = 父路径
+      map.set(objToken, currentPath);
+
+      if (hasChild && nodeToken) {
+        // 子文档路径 = 当前路径/标题
+        const childPath = currentPath
+          ? `${currentPath}/${sanitizeFilename(title)}`
+          : sanitizeFilename(title);
+        await walk(nodeToken, childPath);
+      }
+    }
+  }
+
+  await walk(rootToken, '');
+  return map;
+}
+
+// 软删除：把文件重命名为 .deleted-{timestamp} 而非真删
+// 用户可在 .feishu-sync-soft-trash/ 目录里恢复
+async function softDeleteLocalFile(fileAbs, rootDir) {
+  try {
+    await fs.access(fileAbs);
+  } catch {
+    return false; // 文件已不存在
+  }
+
+  const trashDir = path.join(rootDir, '.feishu-sync-soft-trash');
+  await fs.mkdir(trashDir, { recursive: true });
+
+  const baseName = path.basename(fileAbs);
+  const timestamp = Date.now();
+  const newName = `${baseName}.deleted-${timestamp}`;
+  const newPath = path.join(trashDir, newName);
+
+  try {
+    await fs.rename(fileAbs, newPath);
+    return true;
+  } catch (err) {
+    // fallback: 真删（但记录日志）
+    console.warn(`[realtime-sync] soft-delete failed for ${fileAbs}: ${err.message}; falling back to hard delete`);
+    await fs.unlink(fileAbs).catch(() => {});
+    return true;
+  }
+}
+
 export async function syncNewDocsFromWiki({
   rootDir,
   spaceId,
@@ -1474,6 +1557,9 @@ export async function syncNewDocsFromWiki({
 
   const wikiDocs = [];
   await collectWikiDocNodes(spaceId, token, undefined, wikiDocs);
+
+  // 构建 wiki 树 → 本地子目录路径映射
+  const wikiPathMap = await buildWikiPathMap(spaceId, token);
 
   let added = 0;
   let manifestDirty = false;
@@ -1534,7 +1620,20 @@ export async function syncNewDocsFromWiki({
       continue;
     }
 
-    const fileRel = await ensureUniqueFilePathWithFs(rootDir, `${baseName}.md`, usedPaths);
+    // 路径选择：优先用 wiki 树中这个 doc 的父容器路径
+    // 例如 doc 在 "飞书深诺技术文档/设计方案-XXX/" 下 → 放本地 "飞书深诺技术文档/设计方案-XXX/<标题>.md"
+    // 如果不在 wiki 树（import_task 创建的孤立文档）→ 放根目录 + 用真实标题命名
+    const subDir = wikiPathMap.get(docId);
+    let baseRel;
+    if (subDir) {
+      baseRel = subDir
+        ? `${subDir}/${baseName}.md`
+        : `${baseName}.md`;
+    } else {
+      // 不在 wiki 树里（可能是 import_task 残留或孤立文档）
+      baseRel = `${baseName}.md`;
+    }
+    const fileRel = await ensureUniqueFilePathWithFs(rootDir, baseRel, usedPaths);
     const fileAbs = path.join(rootDir, fileRel);
 
     const hash = await downloadDocumentToFile(
