@@ -1625,6 +1625,17 @@ export async function syncNewDocsFromWiki({
     const docId = node.documentId;
     if (!docId || existingDocIds.has(docId)) continue;
 
+    // 跳过容器节点（hasChild=true）：容器只对应本地目录，不产生文件。
+    // 容器的"文档体"通常是空的或只有标题，同步它没有意义。
+    if (node.hasChild) {
+      if (logEvents) {
+        console.log(
+          `[realtime-sync] skip container node ${docId} titled "${node.title}" (hasChild=true)`
+        );
+      }
+      continue;
+    }
+
     let meta;
     try {
       meta = await fetchDocumentMeta(docId, token);
