@@ -196,6 +196,8 @@ export function shouldSyncLocalPath(relPath, manifestName) {
   if (!baseName) return false;
   if (baseName === manifestName) return false;
   if (baseName.startsWith('.')) return false;
+  // 排除 soft-trash 目录及其子文件——这些是恢复区，不应同步到飞书
+  if (normalized.includes('.feishu-sync-soft-trash')) return false;
   const lower = baseName.toLowerCase();
   if (!lower.endsWith('.md')) return false;
   if (lower.endsWith('.remote.md')) return false;
