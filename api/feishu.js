@@ -1682,6 +1682,17 @@ export async function syncNewDocsFromWiki({
       continue;
     }
 
+    // 跳过所有 import-mt* 文档：这些是飞书 import_task 创建的残留文档，
+    // 不应该被同步到本地。跳过它们可以阻止 sync 反复下载 289 个孤儿文档。
+    if (/^import-/i.test(node.title || '')) {
+      if (logEvents) {
+        console.log(
+          `[realtime-sync] skip import-mt* node ${docId} titled "${node.title}"`
+        );
+      }
+      continue;
+    }
+
     let meta;
     try {
       meta = await fetchDocumentMeta(docId, token);
