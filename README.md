@@ -182,6 +182,17 @@ FeishuSync 使用三层同步策略：
 - 远程修改 + 本地未改 → 下载
 - 双方都修改 → 保留远程版本为 `.remote.md`，本地版本保留
 
+**上传去重：**
+- `npm run upload` 时自动检测 wiki 里有没有同名文档
+- 有同名 → 复用现有 docId 并更新内容（不创建新 import-mt* 残留）
+- 无同名 → 创建新文档
+
+**软删除机制：**
+- 本地删除文件 → 移到 `.feishu-sync-soft-trash/`（可恢复）
+- 远程删除延迟 7 天（manifest 标记 `pendingDeleteAt`）
+- 7 天内恢复本地文件 → 自动取消远程删除
+- 防止工具/脚本误删无法挽回
+
 ## 目录结构
 
 ```
@@ -198,7 +209,7 @@ FeishuSync/
 │           ├── BSP接口转发方案-v5.1.md
 │           └── ...
 ├── api/                     ← 核心模块
-│   ├── feishu.js            ← 飞书 API 封装（上传/下载/移动/挂载/token reload）
+│   ├── feishu.js            ← 飞书 API 封装（上传/下载/移动/挂载/token reload/去重/软删除）
 │   ├── feishu-md.js         ← Markdown ↔ 飞书块双向转换
 │   ├── helpers.js           ← 工具函数（路径/sanitize/manifest 读写）
 │   └── merge.js             ← 冲突合并逻辑
@@ -222,13 +233,16 @@ FeishuSync/
 
 ## 幽灵副本防护
 
-FeishuSync 有三重守卫防止重复文件：
+FeishuSync 有**四重守卫**防止重复文件：
 
 | 守卫 | 触发条件 | 行为 |
 |---|---|---|
 | 守卫 1（标题级）| wiki 文档标题已被 manifest 中其他 docId 跟踪 | 跳过下载 |
 | 守卫 2（manifest 路径）| wiki 文档标题在 manifest 有任何条目 | 跳过新建 |
-| 守卫 3（文件系统）| wikid/ 子目录已有同名 .md 文件 | 跳过新建 |
+| 守卫 3（wiki 树去重）| wiki 树中已有同名文档（`findExistingDocByTitle`）| 复用现有 docId |
+| 守卫 4（文件系统）| wikid/ 子目录已有同名 .md 文件 | 跳过新建 |
+
+**自动路径映射**：新发现的 wiki 文档 → 用 `buildWikiPathMap()` 查到父容器路径 → 自动放到正确子目录（不再堆积根目录）。
 
 **清理残留文件：**
 
@@ -277,7 +291,7 @@ tail logs/watchdog.log # watchdog 状态
 | 浏览器弹出授权页面 | refresh_token 过期（约 30 天一次），点授权即可 |
 | 出现 `-N` 后缀文件 | 运行 `node scripts/cleanup-stubs.mjs --dry-run` 检查 |
 | sync 崩溃 | watchdog 会自动重启，检查 `logs/watchdog.log` |
-| 文件在根目录不在子目录 | sync 设计限制，可手动移动文件并更新 manifest |
+| 文件在根目录不在子目录 | sync 已自动映射路径（`buildWikiPathMap`），自动放到对应子目录 |
 | 表格上传报 1770001 | 空单元格问题，已修复（空格占位）|
 | 图片不显示 | 检查 `drive:drive` 权限是否开通 |
 
@@ -289,6 +303,11 @@ tail logs/watchdog.log # watchdog 状态
 1. 从备份复制文件到 `wikid/`
 2. 用备份的 `.feishu-sync.json` 替换当前 manifest
 3. 重启 sync → 自动重建映射
+
+**软删除恢复：**
+1. 从 `.feishu-sync-soft-trash/` 找回文件
+2. 复制到原位置
+3. 下一次 sync → 自动取消 pendingDelete
 
 **飞书侧恢复：** 删除的文档在飞书回收站保留 30 天。
 
