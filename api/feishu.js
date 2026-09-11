@@ -1164,7 +1164,16 @@ export function createChangeProcessor({
     }
   };
 
+  let lastSoftTrashCleanup = 0;
   const processChanges = async (remoteBatch, localBatch) => {
+    // 定期清理 soft-trash（每天一次）
+    const now = Date.now();
+    if (now - lastSoftTrashCleanup > CLEANUP_INTERVAL_MS) {
+      lastSoftTrashCleanup = now;
+      cleanSoftTrash(rootDir).catch((err) => {
+        console.error(`[realtime-sync] soft-trash cleanup error: ${err.message}`);
+      });
+    }
     if (localBatch.has('local')) {
       localBatch.delete('local');
       if (typeof runFullSync === 'function') {
@@ -1586,6 +1595,43 @@ async function softDeleteLocalFile(fileAbs, rootDir) {
     console.warn(`[realtime-sync] soft-delete failed for ${fileAbs}: ${err.message}; falling back to hard delete`);
     await fs.unlink(fileAbs).catch(() => {});
     return true;
+  }
+}
+
+// 定期清理 soft-trash 目录中的旧文件
+// 默认保留 7 天，超过的硬删
+const SOFT_TRASH_RETENTION_MS = 7 * 24 * 60 * 60 * 1000; // 7 天
+const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 每天检查一次
+
+export async function cleanSoftTrash(rootDir) {
+  const trashDir = path.join(rootDir, '.feishu-sync-soft-trash');
+  try {
+    await fs.access(trashDir);
+  } catch {
+    return; // 目录不存在，跳过
+  }
+
+  const now = Date.now();
+  let deleted = 0;
+  let kept = 0;
+
+  for (const file of await fs.readdir(trashDir)) {
+    const filePath = path.join(trashDir, file);
+    try {
+      const stat = await fs.stat(filePath);
+      if (stat.isFile() && now - stat.mtimeMs > SOFT_TRASH_RETENTION_MS) {
+        await fs.unlink(filePath);
+        deleted++;
+      } else if (stat.isFile()) {
+        kept++;
+      }
+    } catch {
+      // ignore errors
+    }
+  }
+
+  if (deleted > 0) {
+    console.log(`[realtime-sync] soft-trash cleanup: deleted ${deleted} files older than 7 days, kept ${kept}`);
   }
 }
 
