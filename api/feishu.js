@@ -1245,6 +1245,37 @@ export function createChangeProcessor({
       const baseName = sanitizeFilename(title) || docId;
       const desiredName = `${baseName}.md`;
       let fileRel = entry?.file;
+
+      // 容器节点守卫（关键）：如果本地已存在同名目录（如
+      // 飞书深诺技术文档/WhatsApp-BSP-API开放评估/），说明这个 doc 是
+      // 容器节点，不应该有对应的 .md 文件。否则每轮同步都会为它创建
+      // -N.md stub 文件，形成增长链（历史上产生了 -1 ~ -9）。
+      const containerDirRel = fileRel ? path.posix.dirname(fileRel) : '.';
+      const containerDirAbs = path.join(
+        rootDir,
+        containerDirRel === '.' ? '' : containerDirRel,
+        baseName
+      );
+      const containerStat = await fs.stat(containerDirAbs).catch(() => null);
+      if (containerStat?.isDirectory()) {
+        if (logEvents) {
+          console.log(
+            `[realtime-sync] skip container doc ${docId} titled "${title}" ` +
+            `(local directory exists: ${path.relative(rootDir, containerDirAbs)})`
+          );
+        }
+        // 清理已有的 stub 文件
+        if (fileRel) {
+          const stubAbs = path.join(rootDir, fileRel);
+          await softDeleteLocalFile(stubAbs, rootDir);
+        }
+        if (manifestDocs[docId]) {
+          delete manifestDocs[docId];
+          manifestDirty = true;
+        }
+        continue;
+      }
+
       // 标题重命名保护（防幽灵副本）：
       // 1) 仅当 basename 真的变化（标题被改）时才重命名，否则不动文件位置；
       // 2) 重命名只在原文件所在目录内进行，绝不把子目录文件搬到根目录。
@@ -1258,15 +1289,26 @@ export function createChangeProcessor({
         let counter = 1;
         let newRel =
           dir === '.' ? candidate : ensurePosixPath(path.join(dir, candidate));
+        // 最多尝试 20 次避免无限增长链（历史上出现过 -1 ~ -9 的堆积）
         while (
-          usedPaths.has(newRel) ||
-          (await fileExists(path.join(rootDir, newRel)))
+          counter <= 20 &&
+          (usedPaths.has(newRel) ||
+            (await fileExists(path.join(rootDir, newRel))))
         ) {
           candidate = `${baseName}-${counter}.md`;
           newRel =
             dir === '.' ? candidate : ensurePosixPath(path.join(dir, candidate));
           counter += 1;
         }
+        if (counter > 20) {
+          // 放弃重命名，保持当前文件名，避免产生新的 -N 文件
+          if (logEvents) {
+            console.log(
+              `[realtime-sync] skip rename for ${docId} titled "${title}": ` +
+              `target name occupied (kept ${fileRel})`
+            );
+          }
+        } else {
         const oldAbs = path.join(rootDir, fileRel);
         const newAbs = path.join(rootDir, newRel);
         if (await fileExists(oldAbs)) {
@@ -1282,6 +1324,7 @@ export function createChangeProcessor({
           entry.file = fileRel;
         }
         manifestDirty = true;
+        }
       }
       if (!fileRel) {
         // manifest 无条目的新文档：保持原行为落到根目录
