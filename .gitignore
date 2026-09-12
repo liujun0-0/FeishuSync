@@ -159,3 +159,6 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# FeishuSync auth URL (generated at runtime)
+feishu-auth-url.txt
