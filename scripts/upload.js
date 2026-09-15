@@ -1,8 +1,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { readConfig, requireConfigValue, resolvePath } from '../config.js';
-import { readToken, getFileIdentity } from '../api/helpers.js';
+import { readToken, getFileIdentity, hashFile } from '../api/helpers.js';
 import { loadState, saveState } from '../api/sync-state.js';
+import { classifyPathChange } from '../api/move-transaction.js';
 import { createDocument, uploadMarkdownToDocument, findExistingDocByTitle, collectWikiDocNodes, createWikiNode, addDocToWiki, moveWikiNode } from '../api/feishu.js';
 
 if (typeof fetch !== 'function') {
@@ -43,7 +44,7 @@ export async function main() {
 
   // 从 markdown 提取 H1 标题作为飞书文档标题
   const titleMatch = markdown.match(/^#\s+(.+)\s*$/m);
-  const title = titleMatch ? titleMatch[1].trim() : require('node:path').basename(inputPath, '.md');
+  const title = titleMatch ? titleMatch[1].trim() : path.basename(inputPath, '.md');
   const rel = path.relative(syncRoot, inputPath).replaceAll('\\', '/');
   const identity = await getFileIdentity(inputPath);
   const parts = rel.split('/'); parts.pop();
@@ -64,8 +65,15 @@ export async function main() {
   const existing = await findExistingDocByTitle(spaceId, token, title);
   let documentId;
   const identityEntry = identity && Object.entries(state.docs || {}).find(([, e]) => e.identity === identity);
+  const currentHash = await hashFile(inputPath);
+  const moveKind = identityEntry
+    ? classifyPathChange(
+      { path: identityEntry[1].file, identity: identityEntry[1].identity, hash: identityEntry[1].hash },
+      { path: rel, identity, hash: currentHash },
+    ).type
+    : 'create';
   if (identityEntry) documentId = identityEntry[0];
-  if (existing) {
+  if (existing && !identityEntry) {
     console.log(`[upload] 复用现有飞书 doc: "${title}" (${existing.docId})`);
     documentId = existing.docId;
   } else if (!documentId) {
@@ -101,7 +109,8 @@ export async function main() {
     title,
     fileType: 'docx',
     identity,
-    lastMove: identityEntry && identityEntry[1].file !== rel
+    hash: currentHash,
+    lastMove: identityEntry && moveKind === 'move'
       ? { from: identityEntry[1].file, to: rel, at: new Date().toISOString() }
       : undefined,
   };
