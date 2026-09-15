@@ -16,18 +16,8 @@ import {
   checkPendingDelete,
   getFileIdentity,
 } from '../api/helpers.js';
-import {
-  deleteRemoteDocument,
-  collectWikiDocNodes,
-  createWikiNode,
-  fetchDocumentMeta,
-  fetchChildrenCount,
-  fetchAllBlocks,
-  downloadDocumentToFile,
-  uploadMarkdownToDocument,
-  createDocumentFromMarkdown,
-  moveWikiNode,
-} from '../api/feishu.js';
+import { collectWikiDocNodes, createWikiNode, uploadMarkdownToDocument, createDocumentFromMarkdown } from '../api/feishu.js';
+import { deleteRemoteDocument, fetchDocumentMeta, fetchChildrenCount, fetchAllBlocks, downloadDocumentToFile, moveWikiNode } from '../api/remote-sync.js';
 import { feishuToMarkdown } from '../api/feishu-md.js';
 import { mergeRemoteIntoLocal } from '../api/merge.js';
 
