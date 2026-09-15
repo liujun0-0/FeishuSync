@@ -230,16 +230,48 @@ export async function removeEmptyParentDirs(startDir, rootDir) {
 }
 
 export const PENDING_DELETE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+// local-to-remote：删本地后等一会儿再删飞书，避开 Windows 改名产生的 delete+create 毛刺。
+export const LOCAL_TO_REMOTE_DELETE_GRACE_MS = 2 * 60 * 1000;
 
 // Mutates the manifest entry only when the grace period starts. Callers may
 // delete remotely only when this returns "expired".
-export function checkPendingDelete(entry, now = Date.now()) {
+export function checkPendingDelete(
+  entry,
+  now = Date.now(),
+  graceMs = PENDING_DELETE_GRACE_MS
+) {
   const pendingAt = Date.parse(entry?.pendingDeleteAt || '');
   if (!Number.isFinite(pendingAt) || pendingAt > now) {
     entry.pendingDeleteAt = new Date(now).toISOString();
     return 'marked';
   }
-  return now - pendingAt >= PENDING_DELETE_GRACE_MS ? 'expired' : 'waiting';
+  return now - pendingAt >= graceMs ? 'expired' : 'waiting';
+}
+
+/** Find manifest docId whose tracked file path equals rel (posix). */
+export function findDocIdByFile(docs, fileRel) {
+  if (!fileRel || !docs) return null;
+  const normalized = String(fileRel).replaceAll('\\', '/');
+  for (const [docId, entry] of Object.entries(docs)) {
+    if (entry?.file && String(entry.file).replaceAll('\\', '/') === normalized) {
+      return docId;
+    }
+  }
+  return null;
+}
+
+/**
+ * Decide whether a wiki title match is safe to reuse for upload.
+ * Never bind to a doc that is already tracked to a different existing path.
+ */
+export function canReuseDocByTitle(docs, titleMatchDocId, currentRel) {
+  if (!titleMatchDocId) return false;
+  const entry = docs?.[titleMatchDocId];
+  if (!entry?.file) return true;
+  const tracked = String(entry.file).replaceAll('\\', '/');
+  const current = String(currentRel || '').replaceAll('\\', '/');
+  if (tracked === current) return true;
+  return false;
 }
 
 export async function ensureUniqueFilePathWithFs(baseDir, fileName, usedPaths) {
@@ -294,7 +326,7 @@ export function startLocalWatcher(rootDir, options) {
   let watcher;
   try {
     watcher = fsSync.watch(rootDir, { recursive: true }, async (_eventType, filename) => {
-      if (shouldIgnoreLocal && shouldIgnoreLocal()) {
+      if (typeof shouldIgnoreLocal === 'function' && shouldIgnoreLocal()) {
         if (logEvents) {
           console.log('[realtime-sync] ignored local change during poll');
         }
@@ -302,9 +334,14 @@ export function startLocalWatcher(rootDir, options) {
       }
       const relPath = filename ? String(filename) : '';
       if (relPath && !shouldSyncLocalPath(relPath, manifestName)) return;
-      if (isProcessing && isProcessing()) return;
+      // Guard against non-function truthy values (e.g. boolean) which throw
+      // "isProcessing is not a function" and get swallowed as unhandledRejection.
+      if (typeof isProcessing === 'function' && isProcessing()) return;
 
-      const lastProcessCompletedAt = getLastProcessCompletedAt ? getLastProcessCompletedAt() : 0;
+      const lastProcessCompletedAt =
+        typeof getLastProcessCompletedAt === 'function'
+          ? getLastProcessCompletedAt()
+          : 0;
       if (relPath && lastProcessCompletedAt) {
         try {
           const fullPath = path.join(rootDir, relPath);
@@ -329,7 +366,9 @@ export function startLocalWatcher(rootDir, options) {
         }
       }
 
-      onChange(relPath || 'local');
+      if (typeof onChange === 'function') {
+        onChange(relPath || 'local');
+      }
     });
   } catch (err) {
     console.error(`[realtime-sync] failed to start local watcher: ${err.message || err}`);

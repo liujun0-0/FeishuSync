@@ -340,7 +340,10 @@ async function main() {
 process.on('uncaughtException', (err) => {
   console.error('[auth] uncaughtException (swallowed):', err && (err.message || err));
   if (err && err.code === 'EADDRINUSE') {
-    process.exit(1);
+    // Another auth instance likely holds :7777. Exit 0 so watchdog does not
+    // spin a 3s crash loop; the existing process already covers token refresh.
+    console.error('[auth] port 7777 already in use; assuming another auth is running, exiting cleanly');
+    process.exit(0);
   }
 });
 process.on('unhandledRejection', (reason) => {
@@ -349,6 +352,10 @@ process.on('unhandledRejection', (reason) => {
 });
 
 main().catch((err) => {
+  if (err && err.code === 'EADDRINUSE') {
+    console.error('[auth] port 7777 already in use; assuming another auth is running, exiting cleanly');
+    process.exit(0);
+  }
   console.error(err.message || err);
   process.exit(1);
 });

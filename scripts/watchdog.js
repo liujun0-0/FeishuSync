@@ -35,6 +35,23 @@ const CHILDREN = [
 
 let shuttingDown = false;
 const children = new Map();
+// Per-child restart backoff. Prevents auth EADDRINUSE (or rapid sync crashes)
+// from spinning every 3s forever and flooding logs.
+const restartAttempts = new Map();
+const RESTART_BASE_MS = 3000;
+const RESTART_MAX_MS = 60_000;
+const RESTART_RESET_AFTER_MS = 60_000;
+
+function nextRestartDelay(name) {
+  const attempt = (restartAttempts.get(name) || 0) + 1;
+  restartAttempts.set(name, attempt);
+  const delay = Math.min(RESTART_MAX_MS, RESTART_BASE_MS * 2 ** Math.min(attempt - 1, 5));
+  return delay;
+}
+
+function markChildHealthy(name) {
+  restartAttempts.delete(name);
+}
 
 function log(...args) {
   const line = `[${new Date().toISOString()}] ${args.join(' ')}\n`;
@@ -105,8 +122,12 @@ async function spawnChild(spec, tokenPath) {
     log(`[${spec.name}] pid file written (${child.pid})`);
   });
   log(`[${spec.name}] started (pid ${child.pid})`);
+  const startedAt = Date.now();
+  const healthyTimer = setTimeout(() => markChildHealthy(spec.name), RESTART_RESET_AFTER_MS);
+  healthyTimer.unref?.();
 
   child.on('exit', (code, signal) => {
+    clearTimeout(healthyTimer);
     logStream.end();
     children.delete(spec.name);
     removePid(PID_FOR[spec.name]);
@@ -114,8 +135,18 @@ async function spawnChild(spec, tokenPath) {
       log(`[${spec.name}] exited (code ${code}, signal ${signal}); shutdown in progress, not restarting`);
       return;
     }
-    log(`[${spec.name}] crashed (code ${code}, signal ${signal}); restarting in 3s`);
-    setTimeout(() => startChild(spec, tokenPath), 3000);
+    // Clean exit (e.g. auth EADDRINUSE → exit 0) — do not restart.
+    if (code === 0 && !signal) {
+      log(`[${spec.name}] exited cleanly (code 0); not restarting`);
+      return;
+    }
+    // Survived long enough → treat next crash as fresh.
+    if (Date.now() - startedAt >= RESTART_RESET_AFTER_MS) {
+      markChildHealthy(spec.name);
+    }
+    const delay = nextRestartDelay(spec.name);
+    log(`[${spec.name}] crashed (code ${code}, signal ${signal}); restarting in ${Math.round(delay / 1000)}s`);
+    setTimeout(() => startChild(spec, tokenPath), delay);
   });
   child.on('error', (err) => {
     log(`[${spec.name}] spawn error: ${err.message || err}`);
