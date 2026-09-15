@@ -19,7 +19,7 @@ import {
 import { collectWikiDocNodes, createWikiNode, uploadMarkdownToDocument, createDocumentFromMarkdown } from '../api/feishu.js';
 import { deleteRemoteDocument, fetchDocumentMeta, fetchChildrenCount, fetchAllBlocks, downloadDocumentToFile, moveWikiNode } from '../api/remote-sync.js';
 import { feishuToMarkdown } from '../api/feishu-md.js';
-import { mergeRemoteIntoLocal } from '../api/merge.js';
+import { mergeRemoteIntoLocal, mergeThreeWay } from '../api/merge.js';
 
 if (typeof fetch !== 'function') {
   console.error('This CLI requires Node.js 18+ (global fetch).');
@@ -505,7 +505,17 @@ async function main() {
           metadata: { document_id: doc.documentId },
           blocks: remoteBlocks,
         });
-        const localContent = await fs.readFile(fileAbs, 'utf8');
+      const localContent = await fs.readFile(fileAbs, 'utf8');
+      if (existing.baseContent != null) {
+        const three = mergeThreeWay(existing.baseContent, localContent, remoteContent);
+        if (!three.hasConflicts) {
+          await fs.writeFile(fileAbs, three.merged, 'utf8');
+          existing.baseContent = three.merged;
+          existing.hash = localInfo.hash;
+          console.log(`[merge] three-way auto-merged ${doc.title}`);
+          continue;
+        }
+      }
         const verdict = mergeRemoteIntoLocal(localContent, remoteContent);
         if (verdict.autoMerged && !verdict.hasConflicts) {
           // Local and remote are identical — no real conflict. Advance the
@@ -630,6 +640,7 @@ async function main() {
       fileType: resolveFileType(doc, existing),
       hash: localInfo.hash || existing.hash,
       identity: localInfo.identity || existing.identity || null,
+      baseContent: await fs.readFile(fileAbs, 'utf8').catch(() => existing.baseContent || null),
     };
     skipped += 1;
   }
