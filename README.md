@@ -5,7 +5,8 @@
 ## 功能
 
 - **跨平台**：支持 Windows / macOS / Linux（Node.js 18+）
-- **双向同步**：本地 `wikid/` 目录与飞书 Wiki 空间自动同步
+- **本地优先同步**：默认只将本地 `wikid/` 的新增、修改、移动同步到飞书
+- **可选双向同步**：必须显式运行双向命令，才会处理飞书 → 本地
 - **Markdown 转换**：Markdown 语法 ↔ 飞书文档块格式双向转换
 - **Mermaid 画板**：` ```mermaid ` 代码块自动渲染为飞书画板块（block_type=40）
 - **表格支持**：Markdown 表格转飞书表格块，空单元格自动占位（避免 API 报错）
@@ -13,7 +14,7 @@
 - **幽灵副本防护**：三重守卫防止重复文件产生
 - **Token 自愈**：auth 自动续期，token 过期时自动重试
 - **崩溃恢复**：watchdog 监督 auth + sync 进程，崩溃后 3 秒自动拉起
-- **冲突处理**：本地/远程同时修改时，保留双方版本（`.remote.md` 后缀）
+- **冲突处理**：有共同基线时自动合并独立修改；无法安全合并时保留 `.remote.md` 副本
 
 ## 支持的 Markdown 语法
 
@@ -112,10 +113,18 @@ npm run auth
 npm start
 ```
 
-这会启动三个进程：
+默认启动本地优先同步：
 - `auth.js` — token 自动续期（每 84 分钟刷新一次）
-- `sync.js` — 常驻同步主进程（WebSocket 实时事件 + 轮询备份）
+- `sync.js` — 常驻本地监听进程，将本地变更上传到飞书
 - `watchdog.js` — 进程监督（崩溃后 3 秒自动拉起）
+
+如需一次性让本地与飞书重新对账，或启用飞书 → 本地同步，必须显式运行：
+
+```bash
+npm run sync:bidirectional
+```
+
+双向模式会处理远程新增、远程修改、远程移动及冲突；默认模式不会因为远程状态变化而覆盖或删除本地文件。
 
 ### 6. 开机自启
 
@@ -150,13 +159,15 @@ systemctl --user enable --now feishu-sync-watchdog
 
 | 命令 | 说明 |
 |---|---|
-| `npm start` | 启动守护模式（auth + sync + watchdog） |
+| `npm start` | 启动默认本地优先守护模式 |
 | `npm run stop` | 停止所有进程 |
 | `npm run auth` | 手动重新授权 |
 | `npm run upload <md>` | 上传单个 markdown 到飞书（创建新文档） |
 | `npm run download <docId>` | 从飞书下载文档为 markdown |
-| `npm run update` | 单次全量同步 |
-| `npm run sync` | 常驻同步（不带 watchdog） |
+| `npm run update` | 单次双向全量对账（含删除保护） |
+| `npm run sync` | 常驻同步（按配置模式运行） |
+| `npm run sync:bidirectional` | 显式启动双向同步 |
+| `npm run local-watch` | 仅监听本地并上传变更 |
 | `npm run list` | 列出 wiki 空间树 |
 | `npm run fetch <docId>` | 拉取文档元数据和块 JSON |
 | `npm run convert to-md <json>` | 飞书 JSON → Markdown |
@@ -164,32 +175,33 @@ systemctl --user enable --now feishu-sync-watchdog
 
 ## 同步机制
 
-FeishuSync 使用三层同步策略：
+FeishuSync 使用分模式同步策略：
 
 | 层 | 机制 | 延迟 |
 |---|---|---|
-| 实时 | WebSocket 事件订阅（飞书文档变更通知）| 秒级 |
-| 轮询 | 每 30 秒检查远程文档 revision 变化 | 30 秒 |
-| 本地监听 | `fs.watch` 监听 `wikid/` 目录文件变化 | 即时 |
+| 本地优先模式 | `fs.watch` 监听 `wikid/`，仅上传本地变更 | 即时 |
+| 双向模式 | WebSocket + 轮询 + 本地监听 | 秒级 / 30 秒 |
 
 **同步流程：**
-1. 本地文件修改 → `fs.watch` 检测 → 计算 hash → 上传到飞书
-2. 飞书文档修改 → WebSocket 事件 → 下载到本地
-3. 启动时全量比对 → 处理所有差异
+1. 默认：本地文件新增/修改/移动 → `fs.watch` 检测 → 按 identity/hash 上传或移动飞书文档
+2. 双向模式：飞书文档修改 → WebSocket/轮询 → 下载或合并到本地
+3. 双向模式启动时执行全量比对 → 处理所有差异
 
 **冲突处理：**
 - 本地修改 + 远程未改 → 上传
 - 远程修改 + 本地未改 → 下载
-- 双方都修改 → 保留远程版本为 `.remote.md`，本地版本保留
+- 双方修改不同正文行 → 自动三方合并
+- 同一正文区域同时修改 → 远程版本保存为 `.remote.md`，本地版本保留
 
 **上传去重：**
 - `npm run upload` 时自动检测 wiki 里有没有同名文档
 - 有同名 → 复用现有 docId 并更新内容（不创建新 import-mt* 残留）
 - 无同名 → 创建新文档
 
-**软删除机制：**
-- 本地删除文件 → 移到 `.feishu-sync-soft-trash/`（可恢复）
-- 远程删除延迟 7 天（manifest 标记 `pendingDeleteAt`）
+**删除保护机制：**
+- `.feishu-sync-soft-trash/` 及其内容永远不会同步到飞书
+- 双向扫描发现本地文件消失时，先在 manifest 标记 `pendingDeleteAt`
+- 文件连续缺失 7 天后才允许删除远程文档
 - 7 天内恢复本地文件 → 自动取消远程删除
 - 防止工具/脚本误删无法挽回
 
@@ -209,7 +221,10 @@ FeishuSync/
 │           ├── BSP接口转发方案-v5.1.md
 │           └── ...
 ├── api/                     ← 核心模块
-│   ├── feishu.js            ← 飞书 API 封装（上传/下载/移动/挂载/token reload/去重/软删除）
+│   ├── feishu.js            ← 飞书 API 基础封装
+│   ├── remote-download.js   ← 远程读取与下载边界
+│   ├── remote-delete.js     ← 远程删除边界
+│   ├── move-transaction.js  ← identity 移动事务与状态机
 │   ├── feishu-md.js         ← Markdown ↔ 飞书块双向转换
 │   ├── helpers.js           ← 工具函数（路径/sanitize/manifest 读写）
 │   └── merge.js             ← 冲突合并逻辑
