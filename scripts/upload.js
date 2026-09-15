@@ -10,7 +10,7 @@ if (typeof fetch !== 'function') {
   process.exit(1);
 }
 
-async function main() {
+export async function main() {
   const config = await readConfig();
   const inputPathArg = process.argv[2];
   if (!inputPathArg) {
@@ -96,7 +96,6 @@ async function main() {
   await saveState(syncRoot, state, '.feishu-sync.json');
 }
 
-main().catch((err) => {
-  console.error(err.message || err);
-  process.exit(1);
-});
+if (import.meta.url === `file://${process.argv[1].replaceAll('\\', '/')}`) {
+  main().catch((err) => { console.error(err.message || err); process.exit(1); });
+}
