@@ -1094,16 +1094,19 @@ export function createChangeProcessor({
   const recentEvents = new Map();
   const pendingRemote = new Map();
   const pendingLocal = new Set();
+  const deadLetter = [];
   const eventQueuePath = path.join(rootDir, '.feishu-sync-events.json');
   let queueWrite = Promise.resolve();
+  const failures = new Map();
   const persistQueue = () => {
-    const data = { remote: [...pendingRemote], local: [...pendingLocal], updatedAt: new Date().toISOString() };
+    const data = { remote: [...pendingRemote], local: [...pendingLocal], deadLetter, updatedAt: new Date().toISOString() };
     queueWrite = queueWrite.then(() => fs.writeFile(`${eventQueuePath}.tmp`, JSON.stringify(data), 'utf8').then(() => fs.rename(`${eventQueuePath}.tmp`, eventQueuePath))).catch(() => {});
   };
   fs.readFile(eventQueuePath, 'utf8').then((raw) => {
     const data = JSON.parse(raw);
     for (const [id, type] of data.remote || []) pendingRemote.set(id, type);
     for (const rel of data.local || []) pendingLocal.add(rel);
+    for (const item of data.deadLetter || []) deadLetter.push(item);
     if (pendingRemote.size || pendingLocal.size) setTimeout(() => scheduleProcess(), 1000);
   }).catch(() => {});
 
@@ -1195,7 +1198,15 @@ export function createChangeProcessor({
     persistQueue();
 
     try {
-      await processChanges(remoteBatch, localBatch);
+      try { await processChanges(remoteBatch, localBatch); }
+      catch (err) {
+        const key = JSON.stringify({ remote: [...remoteBatch.keys()], local: [...localBatch] });
+        const attempts = (failures.get(key)?.attempts || 0) + 1;
+        if (attempts >= 5) { deadLetter.push({ key, remote: [...remoteBatch], local: [...localBatch], attempts, lastError: err.message || String(err), failedAt: new Date().toISOString() }); failures.delete(key); }
+        else { failures.set(key, { attempts }); for (const [id, type] of remoteBatch) pendingRemote.set(id, type); for (const rel of localBatch) pendingLocal.add(rel); }
+        persistQueue();
+        console.error(`[realtime-sync] queued event failure attempt ${attempts}: ${err.message || err}`);
+      }
     } finally {
       processing = false;
       lastProcessCompletedAt = Date.now();
