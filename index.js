@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { readConfig, requireConfigValue, resolvePath } from './config.js';
+import { isTokenExpired } from './api/helpers.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -58,7 +59,8 @@ async function waitForToken(tokenPath) {
   for (;;) {
     try {
       const raw = await fs.readFile(tokenPath, 'utf8');
-      if (raw.trim()) return true;
+      const token = raw.trim();
+      if (token && !isTokenExpired(token)) return true;
     } catch (err) {
       if (!err || err.code !== 'ENOENT') {
         console.error(`[start] failed reading token file: ${err.message || err}`);

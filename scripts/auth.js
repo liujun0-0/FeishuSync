@@ -15,6 +15,7 @@ const AUTH_URL = 'https://accounts.feishu.cn/open-apis/authen/v1/authorize';
 const TOKEN_URL = 'https://open.feishu.cn/open-apis/authen/v2/oauth/token';
 const AUTH_URL_FILE = path.join(ROOT, 'feishu-auth-url.txt');
 const REFRESH_TOKEN_FILE = path.join(ROOT, '.feishu-sync-refresh-token');
+const TOKEN_REQUEST_TIMEOUT_MS = 30_000;
 
 let pendingCodeResolve = null;
 let shuttingDown = false;
@@ -102,6 +103,14 @@ function buildAuthUrl(clientId) {
 
 const AUTH_TIMEOUT_MS = 5 * 60 * 1000; // 5 分钟超时——用户关了浏览器没授权也不会永远卡住
 
+class TokenRequestError extends Error {
+  constructor(message, code) {
+    super(message);
+    this.name = 'TokenRequestError';
+    this.code = code;
+  }
+}
+
 async function waitForAuthCode(clientId) {
   if (pendingCodeResolve) {
     throw new Error('Authorization already in progress');
@@ -151,12 +160,13 @@ async function exchangeCodeForToken({ clientId, clientSecret, code }) {
       code,
       redirect_uri: REDIRECT_URI,
     }),
+    signal: AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS),
   });
 
   const data = await response.json();
   if (data.code !== 0) {
     const message = data.error_description || data.error || 'Unknown error';
-    throw new Error(`Token request failed (${data.code}): ${message}`);
+    throw new TokenRequestError(`Token request failed (${data.code}): ${message}`, data.code);
   }
 
   return data;
@@ -174,15 +184,20 @@ async function refreshUserAccessToken({ clientId, clientSecret, refreshToken }) 
       client_secret: clientSecret,
       refresh_token: refreshToken,
     }),
+    signal: AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS),
   });
 
   const data = await response.json();
   if (data.code !== 0) {
     const message = data.error_description || data.error || 'Unknown error';
-    throw new Error(`Refresh token failed (${data.code}): ${message}`);
+    throw new TokenRequestError(`Refresh token failed (${data.code}): ${message}`, data.code);
   }
 
   return data;
+}
+
+function isTokenRequestError(err) {
+  return err instanceof TokenRequestError;
 }
 
 async function writeTokenFile(tokenPath, accessToken) {
@@ -215,7 +230,12 @@ async function main() {
   const tokenPath = resolvePath(requireConfigValue(config, 'tokenPath'));
 
   const server = createServer();
-  server.listen(PORT, () => {
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(PORT, () => {
+      server.off('error', reject);
+      resolve();
+    });
   });
 
   const shutdown = (signal) => {
@@ -298,10 +318,15 @@ async function main() {
       if (shuttingDown) break;
       console.error('[auth] Error:', err.message || err);
       if (attempt === 'refresh') {
-        console.log('[auth] Refresh failed. Will open browser for re-authorization in 5s...');
-        refreshToken = null;
-        lastAuthUrlLogged = false;
-        await sleep(5_000);
+        if (isTokenRequestError(err)) {
+          console.log('[auth] refresh_token rejected by Feishu. Will open browser for re-authorization in 5s...');
+          refreshToken = null;
+          lastAuthUrlLogged = false;
+          await sleep(5_000);
+        } else {
+          console.log('[auth] Refresh request failed before Feishu rejected the token. Keeping refresh_token and retrying in 60s...');
+          await sleep(60_000);
+        }
       } else {
         console.log('[auth] Retrying in 10 seconds...');
         await sleep(10_000);
@@ -314,6 +339,9 @@ async function main() {
 // auth process during token refresh or browser callback handling.
 process.on('uncaughtException', (err) => {
   console.error('[auth] uncaughtException (swallowed):', err && (err.message || err));
+  if (err && err.code === 'EADDRINUSE') {
+    process.exit(1);
+  }
 });
 process.on('unhandledRejection', (reason) => {
   const msg = reason && (reason.message || reason) || 'unknown';

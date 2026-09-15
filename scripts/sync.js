@@ -6,6 +6,7 @@ import Lark from '@larksuiteoapi/node-sdk';
 import { readConfig, requireConfigValue, resolvePath } from '../config.js';
 import {
   readToken,
+  isTokenExpired,
   readManifest,
   resolveSyncFolder,
   pickAppCredentials,
@@ -46,6 +47,19 @@ const SYNC_DEFAULTS = {
   ],
 };
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function readFreshToken(tokenPath) {
+  for (;;) {
+    const token = await readToken(tokenPath);
+    if (!isTokenExpired(token)) return token;
+    console.log('[realtime-sync] token file is expired; waiting for auth refresh...');
+    await sleep(1000);
+  }
+}
+
 function requireBoolean(config, keyPath) {
   const value = requireConfigValue(config, keyPath);
   if (typeof value !== 'boolean') {
@@ -71,13 +85,13 @@ async function main() {
   const manifestName = SYNC_DEFAULTS.manifestName;
   const rootDir = resolveSyncFolder(folderInput);
   await fs.mkdir(rootDir, { recursive: true });
-  const token = await readToken(tokenPath);
+  const token = await readFreshToken(tokenPath);
 
   // Token 热更新：auth 进程每 ~96 分钟自动刷新 token 并写回文件。
   // 常驻 sync 拿的是启动时的旧 token，全部 API 调用会撞 99991677。
   // 注册 reloader 后，apiRequest 遇到 token 失效会自动重读文件重试，
   // 不再需要重启进程（也不再触发昨天那种崩溃循环）。
-  setTokenReloader(() => readToken(tokenPath));
+  setTokenReloader(() => readFreshToken(tokenPath));
 
   const { appId, appSecret } = pickAppCredentials(config);
 

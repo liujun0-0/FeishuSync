@@ -4,6 +4,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readConfig, requireConfigValue, resolvePath } from '../config.js';
+import { isTokenExpired } from '../api/helpers.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -74,7 +75,8 @@ async function tokenFileReady(tokenPath, timeoutMs) {
   while (Date.now() < deadline) {
     try {
       const raw = await fs.readFile(tokenPath, 'utf8');
-      if (raw.trim()) return true;
+      const token = raw.trim();
+      if (token && !isTokenExpired(token)) return true;
     } catch {
       // token file not created yet
     }

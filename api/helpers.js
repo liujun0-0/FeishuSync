@@ -12,6 +12,24 @@ export async function readToken(tokenPath) {
   return token;
 }
 
+export function getJwtExpiryMs(token) {
+  try {
+    const parts = String(token || '').split('.');
+    if (parts.length < 2) return null;
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    const exp = Number(payload.exp);
+    return Number.isFinite(exp) ? exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
+export function isTokenExpired(token, skewMs = 60_000) {
+  const expiresAt = getJwtExpiryMs(token);
+  if (!expiresAt) return false;
+  return Date.now() + skewMs >= expiresAt;
+}
+
 export async function hashFile(filePath) {
   const data = await fs.readFile(filePath);
   return crypto.createHash('sha256').update(data).digest('hex');
@@ -235,6 +253,7 @@ export function shouldSyncLocalPath(relPath, manifestName) {
   const baseName = path.basename(normalized);
   if (!baseName) return false;
   if (baseName === manifestName) return false;
+  if (baseName.toLowerCase() === 'feishu-sync-soft-trash.md') return false;
   if (baseName.startsWith('.')) return false;
   // 排除 soft-trash 目录及其子文件——这些是恢复区，不应同步到飞书
   if (normalized.includes('.feishu-sync-soft-trash')) return false;

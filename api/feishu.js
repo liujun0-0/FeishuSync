@@ -26,6 +26,7 @@ import {
 export const API_BASE = 'https://open.feishu.cn/open-apis';
 const DELETE_BATCH_SIZE = 100;
 const CREATE_BATCH_SIZE = 100;
+const REQUEST_TIMEOUT_MS = 60_000;
 
 /**
  * Token 热更新支持。
@@ -75,7 +76,10 @@ export async function apiRequest(method, pathSuffix, token, { query = {}, body }
     headers.Authorization = `Bearer ${authToken}`;
     let response;
     try {
-      response = await fetch(url, options);
+      response = await fetch(url, {
+        ...options,
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
     } catch (err) {
       const bodyPreview = body ? JSON.stringify(body).slice(0, 200) : '';
       throw new Error(
@@ -120,7 +124,7 @@ export async function apiRequest(method, pathSuffix, token, { query = {}, body }
         }
       }
       const message = data.msg || data.error_description || data.error || 'Unknown error';
-      throw new Error(`API error (${data.code}): ${message}`);
+      throw new Error(`API error (${data.code}) ${method} ${url.toString()}: ${message}`);
     }
     return data.data ?? data;
   }
@@ -195,6 +199,7 @@ async function uploadMediaMultipart(buffer, fileName, parentType, parentNode, to
       'Content-Length': String(body.length),
     },
     body,
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
 
   const data = await response.json();
@@ -360,13 +365,15 @@ export async function fetchWikiNodes(spaceId, token, parentNodeToken) {
   return nodes;
 }
 
-export async function collectWikiDocNodes(spaceId, token, parentNodeToken, result) {
+export async function collectWikiDocNodes(spaceId, token, parentNodeToken, result, segments = []) {
   const nodes = await fetchWikiNodes(spaceId, token, parentNodeToken);
   for (const node of nodes) {
     const hasChild = node.has_child ?? node.hasChild;
     const nodeToken = node.node_token || node.nodeToken;
     const objType = node.obj_type || node.objType;
     const objToken = node.obj_token || node.objToken;
+    const title = node.title || node.name || '';
+    const nextSegments = [...segments, title];
 
     // Collect every docx/doc node — including containers (has_child=true).
     // Containers in Feishu wiki v2 are themselves docx documents that may
@@ -378,14 +385,17 @@ export async function collectWikiDocNodes(spaceId, token, parentNodeToken, resul
       result.push({
         nodeToken,
         documentId: objToken,
-        title: node.title || node.name || '',
+        title,
         objType,
         hasChild: Boolean(hasChild),
+        parentNodeToken,
+        parentPath: segments.join('/'),
+        path: nextSegments.join('/'),
       });
     }
 
     if (hasChild && nodeToken) {
-      await collectWikiDocNodes(spaceId, token, nodeToken, result);
+      await collectWikiDocNodes(spaceId, token, nodeToken, result, nextSegments);
     }
   }
 }
@@ -758,6 +768,19 @@ export async function createDocument(token, title) {
   }
 }
 
+// 飞书 import_task 生成的文档标题通常是上传文件名；导入完成后显式设置为
+// 本地 Markdown 的文件名，避免最终出现 import-xxxx.md 这类临时名称。
+export async function renameDocument(documentId, token, title) {
+  if (!documentId || !title) return;
+  // 文档标题属于 Drive 文件元数据；docx PATCH 不接受 title 参数。
+  await apiPatch(`/drive/v1/files/${documentId}`, token, { name: title });
+}
+
+export async function renameWikiNode(spaceId, token, nodeToken, title) {
+  if (!spaceId || !nodeToken || !title) return;
+  await apiPost(`/wiki/v2/spaces/${await resolveSpaceId(spaceId, token)}/nodes/${nodeToken}/update_title`, token, { title });
+}
+
 export async function addDocToWiki(spaceId, token, documentId, parentWikiToken) {
   const resolvedSpaceId = await resolveSpaceId(spaceId, token);
   const body = {
@@ -866,6 +889,11 @@ export async function importMarkdownToDocument({
         if (status === 0 || status === undefined) {
           // 视为成功（有 token + 状态合理）
           const newDocId = result.token;
+          try {
+            await renameDocument(newDocId, token, fileName.replace(/\.md$/i, ''));
+          } catch (renameErr) {
+            console.warn(`[import_task] 文档重命名失败 (${renameErr.message || renameErr})`);
+          }
           try {
             await addDocToWiki(spaceId, token, newDocId, parentWikiToken || null);
           } catch (wikiErr) {
@@ -1725,6 +1753,19 @@ export async function syncNewDocsFromWiki({
   for (const node of wikiDocs) {
     const docId = node.documentId;
     if (!docId || existingDocIds.has(docId)) continue;
+    const nodePath = node.path || '';
+    const nodeTitle = node.title || '';
+    if (
+      nodePath === '.feishu-sync-soft-trash' ||
+      nodePath.startsWith('.feishu-sync-soft-trash/') ||
+      nodeTitle === '.feishu-sync-soft-trash' ||
+      nodeTitle === 'feishu-sync-soft-trash'
+    ) {
+      if (logEvents) {
+        console.log(`[realtime-sync] skip remote soft-trash node ${docId} titled "${node.title}"`);
+      }
+      continue;
+    }
 
     // 跳过容器节点（hasChild=true）：容器只对应本地目录，不产生文件。
     // 容器的"文档体"通常是空的或只有标题，同步它没有意义。

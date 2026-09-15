@@ -3,6 +3,7 @@ import path from 'node:path';
 import { readConfig, requireConfigValue, resolvePath } from '../config.js';
 import {
   readToken,
+  isTokenExpired,
   hashFile,
   readManifest,
   writeManifest,
@@ -17,11 +18,9 @@ import {
 import {
   deleteRemoteDocument,
   collectWikiDocNodes,
-  collectWikiNodePaths,
   createWikiNode,
   fetchDocumentMeta,
   fetchChildrenCount,
-  fetchWikiNodes,
   fetchAllBlocks,
   downloadDocumentToFile,
   uploadMarkdownToDocument,
@@ -37,6 +36,19 @@ if (typeof fetch !== 'function') {
 }
 
 const MANIFEST_NAME = '.feishu-sync.json';
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function readFreshToken(tokenPath) {
+  for (;;) {
+    const token = await readToken(tokenPath);
+    if (!isTokenExpired(token)) return token;
+    console.log('[update] token file is expired; waiting for auth refresh...');
+    await sleep(1000);
+  }
+}
 
 function expandHomeDir(inputPath) {
   if (!inputPath) return inputPath;
@@ -142,12 +154,13 @@ async function main() {
   const resolvedFolder = path.resolve(expandHomeDir(folderInput));
   await fs.mkdir(resolvedFolder, { recursive: true });
 
-  const token = await readToken(tokenPath);
+  const token = await readFreshToken(tokenPath);
   const manifest = await readManifest(resolvedFolder, manifestName);
   const manifestDocs = manifest.docs || {};
   manifest.spaceId = spaceId;
 
   const localFiles = await listMarkdownFiles(resolvedFolder, manifestName);
+  console.log(`[update] local markdown files: ${localFiles.length}`);
   const localMap = new Map();
   for (const file of localFiles) {
     const hash = await hashFile(file.fullPath);
@@ -155,48 +168,49 @@ async function main() {
   }
 
   const wikiDocs = [];
+  console.log('[update] collecting wiki document nodes...');
   await collectWikiDocNodes(spaceId, token, undefined, wikiDocs);
-
-  // Build a parentPath lookup keyed by obj_token (documentId). We'll use it
-  // when downloading new remote docs to mirror their wiki subdirectory
-  // structure locally instead of dumping everything at the root.
-  const wikiTree = await collectWikiNodePaths(spaceId, token);
-  const parentPathByObjToken = new Map();
-  async function indexPaths(parentNodeToken, segments) {
-    const children = await fetchWikiNodes(spaceId, token, parentNodeToken);
-    for (const c of children) {
-      const next = [...segments, c.title || ''];
-      parentPathByObjToken.set(c.obj_token, next.slice(0, -1).join('/'));
-      if (c.has_child) await indexPaths(c.node_token, next);
-    }
+  console.log(`[update] wiki document nodes: ${wikiDocs.length}`);
+  const syncableWikiDocs = wikiDocs.filter((node) => {
+    const nodePath = node.path || '';
+    const title = node.title || '';
+    return nodePath !== '.feishu-sync-soft-trash'
+      && !nodePath.startsWith('.feishu-sync-soft-trash/')
+      && title !== '.feishu-sync-soft-trash'
+      && title !== 'feishu-sync-soft-trash';
+  });
+  const skippedSoftTrashRemote = wikiDocs.length - syncableWikiDocs.length;
+  if (skippedSoftTrashRemote > 0) {
+    console.log(`[update] skipped remote soft-trash nodes: ${skippedSoftTrashRemote}`);
   }
-  await indexPaths(undefined, []);
 
-  const remoteDocs = [];
-  for (const node of wikiDocs) {
-    const meta = await fetchDocumentMeta(node.documentId, token);
-    remoteDocs.push({
-      documentId: node.documentId,
+  const wikiPathIndex = new Map();
+  for (const node of syncableWikiDocs) {
+    if (!node.hasChild || !node.nodeToken || !node.path) continue;
+    wikiPathIndex.set(node.path, {
+      title: node.title,
       nodeToken: node.nodeToken,
-      title: meta.title || node.title || '',
-      parentPath: parentPathByObjToken.get(node.documentId) || '',
-      revisionId: meta.revision_id ?? meta.revisionId ?? null,
-      fileType: node.objType || 'docx',
-      hasChild: node.hasChild,
+      parentNodeToken: node.parentNodeToken,
     });
-  }
-
-  // Build a map of wiki-node paths so we can resolve local subdirectories
-  // (e.g. "飞书深诺技术文档/飞书深诺产品文档") to the right parent node_token
-  // when uploading new local files.
-  const wikiPathIndex = await collectWikiNodePaths(spaceId, token);
-
-  const remoteMap = new Map(remoteDocs.map((doc) => [doc.documentId, doc]));
-  const usedPaths = new Set(localFiles.map((file) => file.relPath));
-  for (const entry of Object.values(manifestDocs)) {
-    if (entry && entry.file) {
-      usedPaths.add(entry.file);
+    const parts = node.path.split('/');
+    if (parts.length > 1) {
+      wikiPathIndex.set(parts.slice(1).join('/'), {
+        title: node.title,
+        nodeToken: node.nodeToken,
+        parentNodeToken: node.parentNodeToken,
+      });
     }
+  }
+  console.log(`[update] indexed wiki container paths: ${wikiPathIndex.size}`);
+  const existingFileToDoc = new Map();
+  for (const [docId, entry] of Object.entries(manifestDocs)) {
+    if (entry.file) existingFileToDoc.set(entry.file, docId);
+  }
+  const remoteExistingPaths = new Set();
+  for (const node of syncableWikiDocs) {
+    const parentPath = node.parentPath || '';
+    const baseName = sanitizeFilename(node.title) || node.documentId;
+    remoteExistingPaths.add(parentPath ? `${parentPath}/${baseName}.md` : `${baseName}.md`);
   }
 
   let downloaded = 0;
@@ -207,6 +221,86 @@ async function main() {
   let deletedLocal = 0;
   let deletedRemote = 0;
   let movedRemote = 0;
+
+  for (const [fileRel, localInfo] of localMap.entries()) {
+    if (existingFileToDoc.has(fileRel)) continue;
+    const sameHash = Object.entries(manifestDocs).find(([, e]) => e.hash && localInfo.hash && e.hash === localInfo.hash);
+    if (sameHash) {
+      manifestDocs[sameHash[0]].file = fileRel;
+      existingFileToDoc.set(fileRel, sameHash[0]);
+      console.log(`[dedupe] reused manifest doc for identical local content: ${fileRel}`);
+      continue;
+    }
+    if (remoteExistingPaths.has(fileRel)) {
+      console.log(`[upload] local file matches existing remote path; defer to remote scan: ${fileRel}`);
+      continue;
+    }
+    console.log(`[upload] local file not in manifest: ${fileRel}`);
+    const markdown = await fs.readFile(localInfo.fullPath, 'utf8');
+    const segs = fileRel.split('/');
+    segs.pop();
+    let parentWikiToken;
+    if (segs.length > 0) {
+      parentWikiToken = await ensureParentPath(spaceId, token, segs, wikiPathIndex);
+      if (!parentWikiToken) {
+        console.warn(
+          `[upload] could not resolve parent for local subdirectory "${segs.join('/')}"; uploading to root`
+        );
+      }
+    }
+    const newDocId = await createDocumentFromMarkdown(
+      spaceId,
+      token,
+      markdown,
+      parentWikiToken
+    );
+    const meta = await fetchDocumentMeta(newDocId, token);
+    manifestDocs[newDocId] = {
+      file: fileRel,
+      revisionId: meta.revision_id ?? meta.revisionId ?? null,
+      title: meta.title || '',
+      fileType: 'docx',
+      hash: localInfo.hash,
+    };
+    existingFileToDoc.set(fileRel, newDocId);
+    uploaded += 1;
+  }
+  if (uploaded > 0) {
+    await writeManifest(resolvedFolder, { spaceId, docs: manifestDocs }, manifestName);
+    console.log(`[update] wrote manifest after early local uploads: ${uploaded}`);
+  }
+
+  const remoteDocs = [];
+  let metaIndex = 0;
+  for (const node of syncableWikiDocs) {
+    if (!manifestDocs[node.documentId] && /^import-/i.test(node.title || '')) {
+      skipped += 1;
+      continue;
+    }
+    metaIndex += 1;
+    console.log(`[update] fetching meta ${metaIndex}: ${node.title || node.documentId}`);
+    const meta = await fetchDocumentMeta(node.documentId, token);
+    remoteDocs.push({
+      documentId: node.documentId,
+      nodeToken: node.nodeToken,
+      title: meta.title || node.title || '',
+      parentPath: node.parentPath || '',
+      revisionId: meta.revision_id ?? meta.revisionId ?? null,
+      fileType: node.objType || 'docx',
+      hasChild: node.hasChild,
+    });
+  }
+
+  // Build a map of wiki-node paths so we can resolve local subdirectories
+  // (e.g. "飞书深诺技术文档/飞书深诺产品文档") to the right parent node_token
+  // when uploading new local files.
+  const remoteMap = new Map(remoteDocs.map((doc) => [doc.documentId, doc]));
+  const usedPaths = new Set(localFiles.map((file) => file.relPath));
+  for (const entry of Object.values(manifestDocs)) {
+    if (entry && entry.file) {
+      usedPaths.add(entry.file);
+    }
+  }
 
   for (const doc of remoteDocs) {
     const existing = manifestDocs[doc.documentId];
@@ -266,15 +360,19 @@ async function main() {
     // moved the file locally, so honoring Feishu's position would undo it.
     let desiredRel = null;
     if (!localMoved) {
-      const renameCandidates = new Set(usedPaths);
-      if (fileRel) {
-        renameCandidates.delete(fileRel);
+      if (!existing && localMap.has(desiredRelative)) {
+        desiredRel = desiredRelative;
+      } else {
+        const renameCandidates = new Set(usedPaths);
+        if (fileRel) {
+          renameCandidates.delete(fileRel);
+        }
+        desiredRel = await ensureUniqueFilePath(
+          resolvedFolder,
+          desiredRelative,
+          renameCandidates
+        );
       }
-      desiredRel = await ensureUniqueFilePath(
-        resolvedFolder,
-        desiredRelative,
-        renameCandidates
-      );
     }
     if (!fileRel) {
       fileRel = desiredRel;
@@ -309,6 +407,18 @@ async function main() {
     const localExists = Boolean(localInfo);
 
     if (!existing) {
+      if (localExists) {
+        manifestDocs[doc.documentId] = {
+          file: fileRel,
+          revisionId: doc.revisionId,
+          title: doc.title,
+          fileType: resolveFileType(doc),
+          hash: localInfo.hash,
+        };
+        usedPaths.add(fileRel);
+        skipped += 1;
+        continue;
+      }
       // Containers (has_child=true) carry the wiki node, but their own body
       // is often empty. Skip downloading empty containers so we don't litter
       // the local tree with empty .md files mirroring empty directories.
@@ -519,10 +629,10 @@ async function main() {
     }
     const localInfo = localMap.get(fileRel);
     if (localInfo) {
-      await deleteLocalFile(localInfo.fullPath);
-      await removeEmptyParentDirs(path.dirname(localInfo.fullPath), resolvedFolder);
-      localMap.delete(fileRel);
-      deletedLocal += 1;
+      // Remote omission can be caused by pagination/transient API failures.
+      // Never delete a local file solely because its manifest doc is absent;
+      // drop the stale mapping and let the normal upload pass recreate it.
+      console.warn(`[safety] remote doc ${docId} missing; preserving local file for re-upload: ${fileRel}`);
     }
     delete manifestDocs[docId];
   }
@@ -534,6 +644,14 @@ async function main() {
 
   for (const [fileRel, localInfo] of localMap.entries()) {
     if (fileToDoc.has(fileRel)) continue;
+    const sameHash = Object.entries(manifestDocs).find(([, e]) => e.hash && localInfo.hash && e.hash === localInfo.hash);
+    if (sameHash) {
+      manifestDocs[sameHash[0]].file = fileRel;
+      fileToDoc.set(fileRel, sameHash[0]);
+      console.log(`[dedupe] reused manifest doc for identical local content: ${fileRel}`);
+      continue;
+    }
+    console.log(`[upload] local file not in manifest: ${fileRel}`);
     const markdown = await fs.readFile(localInfo.fullPath, 'utf8');
 
     // Resolve parent wiki node from the file's local subdirectory.
