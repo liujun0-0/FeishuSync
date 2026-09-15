@@ -170,6 +170,46 @@ export async function deleteLocalFile(filePath) {
   }
 }
 
+// Remove empty directories left behind by a successful file move/delete.
+// Only ancestors of the affected file are considered; sweeping the entire
+// tree would remove folders intentionally created as wiki containers.
+export async function removeEmptyParentDirs(startDir, rootDir) {
+  const root = path.resolve(rootDir);
+  let current = path.resolve(startDir);
+  const removed = [];
+
+  while (current !== root && current.startsWith(`${root}${path.sep}`)) {
+    if (path.basename(current) === '.feishu-sync-soft-trash') break;
+    try {
+      if ((await fs.readdir(current)).length > 0) break;
+      await fs.rmdir(current);
+      removed.push(current);
+      current = path.dirname(current);
+    } catch (err) {
+      if (err?.code === 'ENOENT') {
+        current = path.dirname(current);
+        continue;
+      }
+      break;
+    }
+  }
+
+  return removed;
+}
+
+export const PENDING_DELETE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Mutates the manifest entry only when the grace period starts. Callers may
+// delete remotely only when this returns "expired".
+export function checkPendingDelete(entry, now = Date.now()) {
+  const pendingAt = Date.parse(entry?.pendingDeleteAt || '');
+  if (!Number.isFinite(pendingAt) || pendingAt > now) {
+    entry.pendingDeleteAt = new Date(now).toISOString();
+    return 'marked';
+  }
+  return now - pendingAt >= PENDING_DELETE_GRACE_MS ? 'expired' : 'waiting';
+}
+
 export async function ensureUniqueFilePathWithFs(baseDir, fileName, usedPaths) {
   const base = fileName.replace(/\.md$/i, '');
   let candidate = `${base}.md`;

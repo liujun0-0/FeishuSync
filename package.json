@@ -18,6 +18,7 @@
     "update": "node scripts/update.js",
     "sync": "node scripts/sync.js",
     "watchdog": "node scripts/watchdog.js",
+    "test": "node tests/sync-safety.test.mjs",
     "start": "node index.js start",
     "stop": "node index.js stop"
   }

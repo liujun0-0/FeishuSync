@@ -15,6 +15,8 @@ import {
   ensurePosixPath,
   fileExists,
   deleteLocalFile,
+  removeEmptyParentDirs,
+  checkPendingDelete,
   ensureUniqueFilePathWithFs,
   shouldSyncLocalPath,
   buildConflictPath,
@@ -1419,19 +1421,23 @@ export function createChangeProcessor({
       const exists = await fileExists(fileAbs);
 
       if (!exists) {
-        // 本地文件不存在：直接删除飞书文档（不 soft-delete）。
-        //
-        // 为什么不用 soft-delete / pendingDelete？
-        // 因为这里触发的删除会被 syncNewDocsFromWiki 的 wiki 树遍历"抵消"：
-        // 删了飞书文档 → wiki 树还有 → sync 下一轮重新下载 → 循环。
-        // 所以本地→远程删除必须是确定性的：用户删了就真删。
-        //
-        // 如果用户想恢复：从飞书回收站（30天内）恢复即可。
+        // Missing can mean an interrupted move/download or stale manifest,
+        // not necessarily an intentional delete. Require a stable absence.
         if (docId) {
           const entry = manifestDocs[docId];
+          const deleteState = checkPendingDelete(entry);
+          if (deleteState === 'marked') {
+            manifestDirty = true;
+            console.warn(
+              `[realtime-sync] local file missing for tracked doc ${docId} (${entry?.file}); ` +
+              `marked pendingDelete. Remote delete is delayed for 7 days.`
+            );
+            continue;
+          }
+          if (deleteState === 'waiting') continue;
           console.warn(
-            `[realtime-sync] local file missing for tracked doc ${docId} (${entry?.file}); ` +
-            `deleting from feishu (user-initiated delete).`
+            `[realtime-sync] local file still missing after 7 days for ${docId} (${entry?.file}); ` +
+            `deleting from feishu.`
           );
           try {
             await deleteRemoteDocument(docId, token, resolveFileType(null, entry));
@@ -1439,6 +1445,10 @@ export function createChangeProcessor({
             console.error(
               `[realtime-sync] failed to delete remote ${docId}: ${err.message}`
             );
+            // Keep tracking (and pendingDeleteAt) so a transient API failure
+            // can be retried. Dropping the manifest entry here would make the
+            // poller download the document again as if it were new.
+            continue;
           }
           delete manifestDocs[docId];
           manifestDirty = true;
@@ -1632,11 +1642,13 @@ async function softDeleteLocalFile(fileAbs, rootDir) {
 
   try {
     await fs.rename(fileAbs, newPath);
+    await removeEmptyParentDirs(path.dirname(fileAbs), rootDir);
     return true;
   } catch (err) {
     // fallback: 真删（但记录日志）
     console.warn(`[realtime-sync] soft-delete failed for ${fileAbs}: ${err.message}; falling back to hard delete`);
     await fs.unlink(fileAbs).catch(() => {});
+    await removeEmptyParentDirs(path.dirname(fileAbs), rootDir);
     return true;
   }
 }

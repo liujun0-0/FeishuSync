@@ -11,6 +11,8 @@ import {
   ensureUniqueFilePath,
   buildConflictPath,
   resolveFileType,
+  removeEmptyParentDirs,
+  checkPendingDelete,
 } from '../api/helpers.js';
 import {
   deleteRemoteDocument,
@@ -84,7 +86,7 @@ async function ensureParentPath(spaceId, token, segs, wikiPathIndex) {
 
 async function listMarkdownFiles(rootDir, manifestName) {
   const files = [];
-  const skipDirs = new Set(['.git', 'node_modules']);
+  const skipDirs = new Set(['.git', 'node_modules', '.feishu-sync-soft-trash']);
 
   const walk = async (dir) => {
     const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -289,6 +291,7 @@ async function main() {
           renamed = true;
         } catch {}
         if (renamed) {
+          await removeEmptyParentDirs(path.dirname(oldAbs), resolvedFolder);
           localMap.delete(oldRel);
           localMap.set(desiredRel, { ...oldInfo, relPath: desiredRel, fullPath: newAbs });
         }
@@ -348,6 +351,16 @@ async function main() {
         skipped += 1;
         continue;
       }
+      const deleteState = checkPendingDelete(existing);
+      if (deleteState === 'marked') {
+        console.warn(`[delete-guard] ${fileRel} is missing; remote delete delayed for 7 days`);
+        skipped += 1;
+        continue;
+      }
+      if (deleteState === 'waiting') {
+        skipped += 1;
+        continue;
+      }
       await deleteRemoteDocument(doc.documentId, token, resolveFileType(doc, existing));
       delete manifestDocs[doc.documentId];
       deletedRemote += 1;
@@ -356,6 +369,10 @@ async function main() {
 
     const localChanged =
       existing.hash && localInfo.hash && existing.hash !== localInfo.hash;
+    if (existing.pendingDeleteAt) {
+      delete existing.pendingDeleteAt;
+      console.log(`[delete-guard] restored ${fileRel}; cancelled pending remote delete`);
+    }
     const remoteChanged =
       existing.revisionId && doc.revisionId && existing.revisionId !== doc.revisionId;
 
@@ -503,6 +520,7 @@ async function main() {
     const localInfo = localMap.get(fileRel);
     if (localInfo) {
       await deleteLocalFile(localInfo.fullPath);
+      await removeEmptyParentDirs(path.dirname(localInfo.fullPath), resolvedFolder);
       localMap.delete(fileRel);
       deletedLocal += 1;
     }
