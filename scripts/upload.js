@@ -4,7 +4,7 @@ import { readConfig, requireConfigValue, resolvePath } from '../config.js';
 import { readToken, getFileIdentity, hashFile } from '../api/helpers.js';
 import { loadState, saveState } from '../api/sync-state.js';
 import { classifyPathChange } from '../api/move-transaction.js';
-import { createDocument, uploadMarkdownToDocument, findExistingDocByTitle, collectWikiDocNodes, createWikiNode, addDocToWiki, moveWikiNode } from '../api/feishu.js';
+import { createDocument, uploadMarkdownToDocument, findExistingDocByTitle, collectWikiDocNodes, createWikiNode, addDocToWiki, moveWikiNode, renameDocument, renameWikiNode } from '../api/feishu.js';
 
 if (typeof fetch !== 'function') {
   console.error('This CLI requires Node.js 18+ (global fetch).');
@@ -82,10 +82,14 @@ export async function main() {
     documentId = created.documentId;
   }
   if (!existing && parentToken) await addDocToWiki(spaceId, token, documentId, parentToken);
-  if (identityEntry && parentToken) {
+  if (identityEntry) {
     const nodes=[]; await collectWikiDocNodes(spaceId, token, undefined, nodes);
     const node=nodes.find(n=>n.documentId===documentId);
-    if (node?.nodeToken) await moveWikiNode(spaceId, token, node.nodeToken, parentToken);
+    if (parentToken && node?.nodeToken) await moveWikiNode(spaceId, token, node.nodeToken, parentToken);
+    if (node?.title !== title) {
+      await renameDocument(documentId, token, title);
+      if (node?.nodeToken) await renameWikiNode(spaceId, token, node.nodeToken, title);
+    }
   }
 
   // 用 block-by-block 路径上传（走我们的 mermaid→block_type=40 代码）
