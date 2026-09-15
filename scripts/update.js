@@ -69,6 +69,7 @@ function isMarkdownFile(entry) {
 // Any missing prefix in the wiki is created on the fly as a container node,
 // so that a brand-new local folder "A/B/C" yields a corresponding wiki path.
 async function ensureParentPath(spaceId, token, segs, wikiPathIndex) {
+  if (!globalThis.__feishuParentLocks) globalThis.__feishuParentLocks = new Map();
   let currentParent = null;
   let accumulated = [];
   for (const title of segs) {
@@ -76,9 +77,20 @@ async function ensureParentPath(spaceId, token, segs, wikiPathIndex) {
     const candidate = accumulated.join('/');
     let hit = wikiPathIndex.get(candidate);
     if (!hit) {
+      const lockKey = `${spaceId}:${candidate}`;
+      const existingLock = globalThis.__feishuParentLocks.get(lockKey);
+      if (existingLock) {
+        hit = await existingLock;
+        if (hit) wikiPathIndex.set(candidate, hit);
+      }
+      if (hit) { currentParent = hit.nodeToken; continue; }
+      let resolveLock;
+      const lock = new Promise((resolve) => { resolveLock = resolve; });
+      globalThis.__feishuParentLocks.set(lockKey, lock);
       try {
         const node = await createWikiNode(spaceId, token, title, currentParent);
         hit = { title, nodeToken: node.node_token, parentNodeToken: currentParent };
+        resolveLock(hit);
         // Record both key shapes so subsequent lookups in this run hit the cache.
         wikiPathIndex.set(candidate, hit);
         if (accumulated.length > 1) {
@@ -86,10 +98,13 @@ async function ensureParentPath(spaceId, token, segs, wikiPathIndex) {
         }
         console.log(`[upload] created wiki container "${candidate}"`);
       } catch (err) {
+        resolveLock(null);
         console.error(
           `[upload] failed to create wiki container "${candidate}": ${err.message || err}`
         );
         return null;
+      } finally {
+        globalThis.__feishuParentLocks.delete(lockKey);
       }
     }
     currentParent = hit.nodeToken;

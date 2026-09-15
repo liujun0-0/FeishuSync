@@ -1,7 +1,9 @@
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import { readConfig, requireConfigValue, resolvePath } from '../config.js';
 import { readToken } from '../api/helpers.js';
-import { createDocument, uploadMarkdownToDocument } from '../api/feishu.js';
+import { loadState, saveState } from '../api/sync-state.js';
+import { createDocument, uploadMarkdownToDocument, findExistingDocByTitle, collectWikiDocNodes, createWikiNode, addDocToWiki } from '../api/feishu.js';
 
 if (typeof fetch !== 'function') {
   console.error('This CLI requires Node.js 18+ (global fetch).');
@@ -16,14 +18,44 @@ async function main() {
     process.exit(1);
   }
   const inputPath = resolvePath(inputPathArg);
+  const stat = await fs.stat(inputPath);
+  if (stat.isDirectory()) {
+    const entries = await fs.readdir(inputPath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        process.argv[2] = path.join(inputPath, entry.name);
+        await main();
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.md')) continue;
+      const child = path.join(inputPath, entry.name);
+      process.argv[2] = child;
+      await main();
+    }
+    return;
+  }
 
   const markdown = await fs.readFile(inputPath, 'utf8');
   const token = await readToken(resolvePath(requireConfigValue(config, 'tokenPath')));
   const spaceId = requireConfigValue(config, 'wikiSpaceId');
+  const syncRoot = resolvePath(config.sync?.folderPath || 'wikid');
 
   // 从 markdown 提取 H1 标题作为飞书文档标题
   const titleMatch = markdown.match(/^#\s+(.+)\s*$/m);
   const title = titleMatch ? titleMatch[1].trim() : require('node:path').basename(inputPath, '.md');
+  const rel = path.relative(syncRoot, inputPath).replaceAll('\\', '/');
+  const parts = rel.split('/'); parts.pop();
+  let parentToken;
+  if (parts.length) {
+    const nodes=[]; await collectWikiDocNodes(spaceId, token, undefined, nodes);
+    let parentPath='';
+    for (const part of parts) {
+      parentPath = parentPath ? `${parentPath}/${part}` : part;
+      let hit = nodes.find(n => n.path === parentPath || n.path?.endsWith(`/${parentPath}`));
+      if (!hit) { const made=await createWikiNode(spaceId, token, part, parentToken); hit={nodeToken:made.node_token}; }
+      parentToken=hit.nodeToken;
+    }
+  }
 
   // 去重：上传前先查 wiki 里有没有同名 doc
   // 找到则复用现有 doc 并更新内容（避免反复创建 import-mt* 残留）
@@ -37,6 +69,7 @@ async function main() {
     const created = await createDocument(token, title);
     documentId = created.documentId;
   }
+  if (!existing && parentToken) await addDocToWiki(spaceId, token, documentId, parentToken);
 
   // 用 block-by-block 路径上传（走我们的 mermaid→block_type=40 代码）
   // 失败时清理空 doc（如果是新建的），避免留下半成品
@@ -52,6 +85,15 @@ async function main() {
     throw err;
   }
   console.log(`Uploaded: ${title} -> ${documentId}`);
+  const state = await loadState(syncRoot, '.feishu-sync.json');
+  state.spaceId = spaceId;
+  state.docs[documentId] = {
+    ...(state.docs[documentId] || {}),
+    file: path.relative(syncRoot, inputPath).replaceAll('\\', '/'),
+    title,
+    fileType: 'docx',
+  };
+  await saveState(syncRoot, state, '.feishu-sync.json');
 }
 
 main().catch((err) => {

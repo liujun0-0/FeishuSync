@@ -1260,6 +1260,11 @@ export function createChangeProcessor({
             manifestDirty = true;
             continue;
           }
+          // Conservative mode: remote trash events are never allowed to
+          // delete local data automatically. A later explicit reconciliation
+          // can handle confirmed deletions.
+          console.warn(`[realtime-sync] remote trash deferred; local deletion disabled: ${entry.file}`);
+          continue;
           localBatch.delete(entry.file);
           // 软删除：移到 .feishu-sync-soft-trash/ 目录而非真删
           // 用户可以从那里恢复（如果误删了飞书文档）

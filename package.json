@@ -14,6 +14,8 @@
     "convert": "node scripts/convert.js",
     "download": "node scripts/download.js",
     "upload": "node scripts/upload.js",
+    "local-upload": "node scripts/local-upload-worker.js",
+    "sync:bidirectional": "node scripts/bidirectional-sync.js",
     "list": "node scripts/list.js",
     "update": "node scripts/update.js",
     "sync": "node scripts/sync.js",
