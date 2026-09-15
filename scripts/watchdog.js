@@ -20,6 +20,10 @@ const LOG_DIR = path.join(ROOT, 'logs');
 const AUTH_LOG = path.join(LOG_DIR, 'auth.log');
 const SYNC_LOG = path.join(LOG_DIR, 'sync.log');
 const WATCHDOG_LOG = path.join(LOG_DIR, 'watchdog.log');
+const MAX_LOG_BYTES = 20 * 1024 * 1024;
+async function rotateLog(file) {
+  try { const st = await fs.stat(file); if (st.size >= MAX_LOG_BYTES) await fs.rename(file, `${file}.${Date.now()}.old`); } catch {}
+}
 
 // Children are (re)started only when they are not alive; this is the core
 // "survive reboots & crashes" guarantee. auth stays up to renew the token;
@@ -85,7 +89,8 @@ async function tokenFileReady(tokenPath, timeoutMs) {
   return false;
 }
 
-function spawnChild(spec, tokenPath) {
+async function spawnChild(spec, tokenPath) {
+  await rotateLog(spec.log);
   const logStream = createWriteStream(spec.log, { flags: 'a' });
   const child = spawn(process.execPath, [spec.script], {
     cwd: ROOT,
