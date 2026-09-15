@@ -18,3 +18,12 @@ export function mergeRemoteIntoLocal(localContent, remoteContent) {
   }
   return { merged: localContent, hasConflicts: true, autoMerged: false };
 }
+
+export function mergeThreeWay(base, local, remote) {
+  if (local === remote) return { merged: local, hasConflicts: false };
+  if (local === base) return { merged: remote, hasConflicts: false };
+  if (remote === base) return { merged: local, hasConflicts: false };
+  const a = String(local).split('\n'), b = String(remote).split('\n');
+  const merged = ['<<<<<<< LOCAL', ...a, '=======', ...b, '>>>>>>> REMOTE'].join('\n');
+  return { merged, hasConflicts: true };
+}
