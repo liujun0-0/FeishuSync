@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mergeThreeWay } from '../api/merge.js';
+import { classifyPathChange } from '../api/move-transaction.js';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -59,4 +60,9 @@ test('three-way merge chooses the side that changed', () => {
   assert.deepEqual(mergeThreeWay('base', 'base', 'remote'), { merged: 'remote', hasConflicts: false });
   assert.deepEqual(mergeThreeWay('base', 'local', 'base'), { merged: 'local', hasConflicts: false });
   assert.equal(mergeThreeWay('base', 'local', 'remote').hasConflicts, true);
+});
+
+test('path changes distinguish move from copy', () => {
+  assert.equal(classifyPathChange({path:'a.md',identity:'1'}, {path:'b.md',identity:'1'}).type, 'move');
+  assert.equal(classifyPathChange({path:'a.md',hash:'h'}, {path:'b.md',hash:'h',identity:'2'}).type, 'copy');
 });
