@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mergeThreeWay } from '../api/merge.js';
+import { beginMoveTransaction, completeMoveTransaction, failMoveTransaction } from '../api/move-transaction.js';
 import { classifyPathChange } from '../api/move-transaction.js';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -70,4 +71,14 @@ test('three-way merge combines independent line edits', () => {
 test('path changes distinguish move from copy', () => {
   assert.equal(classifyPathChange({path:'a.md',identity:'1'}, {path:'b.md',identity:'1'}).type, 'move');
   assert.equal(classifyPathChange({path:'a.md',hash:'h'}, {path:'b.md',hash:'h',identity:'2'}).type, 'copy');
+});
+
+test('move transaction is resumable and records failure', () => {
+  const prepared = beginMoveTransaction({ file: 'old/a.md' }, 'old/a.md', 'new/a.md', '2026-09-15T00:00:00.000Z');
+  assert.equal(prepared.pendingMove.state, 'prepared');
+  const failed = failMoveTransaction(prepared, new Error('rate limited'), '2026-09-15T00:00:01.000Z');
+  assert.equal(failed.pendingMove.state, 'failed');
+  const completed = completeMoveTransaction({ ...prepared, pendingMove: { ...prepared.pendingMove, state: 'prepared' } }, '2026-09-15T00:00:02.000Z');
+  assert.equal(completed.file, 'new/a.md');
+  assert.equal(completed.pendingMove, undefined);
 });

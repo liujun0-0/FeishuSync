@@ -22,6 +22,7 @@ import { fetchDocumentMeta, fetchChildrenCount, fetchAllBlocks, downloadDocument
 import { moveWikiNode } from '../api/remote-sync.js';
 import { feishuToMarkdown } from '../api/feishu-md.js';
 import { mergeRemoteIntoLocal, mergeThreeWay } from '../api/merge.js';
+import { beginMoveTransaction, completeMoveTransaction, failMoveTransaction } from '../api/move-transaction.js';
 
 if (typeof fetch !== 'function') {
   console.error('This CLI requires Node.js 18+ (global fetch).');
@@ -322,6 +323,7 @@ async function main() {
       : `${baseName}.md`;
     let fileRel = existing?.file;
     let localMoved = false;
+    let moveFailed = false;
 
     // --- Local move detection (user moved the file locally) ------------
     // If the manifest entry points to a path that is no longer on disk, but
@@ -335,34 +337,52 @@ async function main() {
         for (const [relPath, li] of localMap.entries()) {
           if (relPath !== fileRel && ((existing.identity && li.identity === existing.identity) || li.hash === existing.hash)) {
             fileRel = relPath;
-            localMoved = true;
-            const localDir = path.posix.dirname(fileRel);
+          const localDir = path.posix.dirname(fileRel);
             const localDirNorm = localDir === '.' ? '' : localDir;
             const remoteDir = doc.parentPath || '';
             if (doc.nodeToken && localDirNorm !== remoteDir) {
               let parentToken = null;
-              if (localDirNorm) {
+            if (localDirNorm) {
                 parentToken = await ensureParentPath(
                   spaceId,
                   token,
                   localDirNorm.split('/'),
                   wikiPathIndex
                 );
+            }
+            if (parentToken !== null) {
+              const moveFrom = existing.file;
+              const moveTo = relPath;
+              manifestDocs[doc.documentId] = beginMoveTransaction(existing, moveFrom, moveTo);
+              await writeManifest(resolvedFolder, { spaceId, docs: manifestDocs }, manifestName);
+              try {
+                await moveWikiNode(spaceId, token, doc.nodeToken, parentToken);
+                const completedMove = completeMoveTransaction(manifestDocs[doc.documentId]);
+                Object.assign(existing, completedMove);
+                manifestDocs[doc.documentId] = existing;
+                console.log(`[move] ${doc.title} -> ${localDirNorm || '<wiki root>'}`);
+                movedRemote += 1;
+              } catch (err) {
+                manifestDocs[doc.documentId] = failMoveTransaction(manifestDocs[doc.documentId], err);
+                await writeManifest(resolvedFolder, { spaceId, docs: manifestDocs }, manifestName);
+                moveFailed = true;
+                console.error(`[move] failed for ${doc.title}: ${err.message || err}`);
               }
-              if (parentToken !== null) {
-                try {
-                  await moveWikiNode(spaceId, token, doc.nodeToken, parentToken);
-                  console.log(`[move] ${doc.title} -> ${localDirNorm || '<wiki root>'}`);
-                  movedRemote += 1;
-                } catch (err) {
-                  console.error(`[move] failed for ${doc.title}: ${err.message || err}`);
-                }
-              }
+              if (!moveFailed) localMoved = true;
+            }
+            else if (localDirNorm === remoteDir) {
+              localMoved = true;
+            }
             }
             break;
           }
         }
       }
+    }
+
+    if (moveFailed) {
+      skipped += 1;
+      continue;
     }
 
     // --- Follow-Feishu rename (remote moved / title changed) ------------
