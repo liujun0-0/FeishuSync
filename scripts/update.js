@@ -268,6 +268,7 @@ async function main() {
       title: meta.title || '',
       fileType: 'docx',
       hash: localInfo.hash,
+      baseContent: markdown,
     };
     existingFileToDoc.set(fileRel, newDocId);
     uploaded += 1;
@@ -452,6 +453,7 @@ async function main() {
         title: doc.title,
         fileType: resolveFileType(doc),
         hash,
+        baseContent: await fs.readFile(fileAbs, 'utf8').catch(() => null),
       };
       usedPaths.add(fileRel);
       localMap.set(fileRel, { fullPath: fileAbs, relPath: fileRel, hash });
@@ -511,7 +513,10 @@ async function main() {
         if (!three.hasConflicts) {
           await fs.writeFile(fileAbs, three.merged, 'utf8');
           existing.baseContent = three.merged;
-          existing.hash = localInfo.hash;
+          existing.hash = await hashFile(fileAbs);
+          existing.revisionId = doc.revisionId;
+          localMap.set(fileRel, { ...localInfo, hash: existing.hash });
+          autoMerged += 1;
           console.log(`[merge] three-way auto-merged ${doc.title}`);
           continue;
         }
@@ -610,6 +615,7 @@ async function main() {
         title: doc.title,
         fileType: resolveFileType(doc, existing),
         hash,
+        baseContent: await fs.readFile(fileAbs, 'utf8').catch(() => existing.baseContent || null),
       };
       localMap.set(fileRel, { ...localInfo, hash });
       downloaded += 1;
@@ -627,6 +633,7 @@ async function main() {
         title: meta.title || doc.title,
         fileType: resolveFileType(doc, existing),
         hash: localInfo.hash,
+        baseContent: markdown,
       };
       uploaded += 1;
       continue;
@@ -709,6 +716,7 @@ async function main() {
       title: meta.title || '',
       fileType: 'docx',
       hash: localInfo.hash,
+      baseContent: markdown,
     };
     uploaded += 1;
   }

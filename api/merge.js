@@ -23,7 +23,34 @@ export function mergeThreeWay(base, local, remote) {
   if (local === remote) return { merged: local, hasConflicts: false };
   if (local === base) return { merged: remote, hasConflicts: false };
   if (remote === base) return { merged: local, hasConflicts: false };
-  const a = String(local).split('\n'), b = String(remote).split('\n');
-  const merged = ['<<<<<<< LOCAL', ...a, '=======', ...b, '>>>>>>> REMOTE'].join('\n');
+  const baseLines = String(base).split('\n');
+  const localLines = String(local).split('\n');
+  const remoteLines = String(remote).split('\n');
+  const change = (next) => {
+    let start = 0;
+    while (start < baseLines.length && start < next.length && baseLines[start] === next[start]) start += 1;
+    let baseEnd = baseLines.length;
+    let nextEnd = next.length;
+    while (baseEnd > start && nextEnd > start && baseLines[baseEnd - 1] === next[nextEnd - 1]) {
+      baseEnd -= 1; nextEnd -= 1;
+    }
+    return { start, end: baseEnd, replacement: next.slice(start, nextEnd) };
+  };
+  const left = change(localLines);
+  const right = change(remoteLines);
+  // Independent edits can be combined without conflict. Treat insertions at
+  // the same offset as overlapping unless they are byte-identical.
+  const disjoint = left.end <= right.start || right.end <= left.start;
+  if (disjoint) {
+    const edits = [left, right].sort((a, b) => b.start - a.start);
+    const out = baseLines.slice();
+    for (const edit of edits) out.splice(edit.start, edit.end - edit.start, ...edit.replacement);
+    return { merged: out.join('\n'), hasConflicts: false };
+  }
+  if (left.start === right.start && left.end === right.end &&
+      left.replacement.join('\n') === right.replacement.join('\n')) {
+    return { merged: local, hasConflicts: false };
+  }
+  const merged = ['<<<<<<< LOCAL', ...localLines, '=======', ...remoteLines, '>>>>>>> REMOTE'].join('\n');
   return { merged, hasConflicts: true };
 }

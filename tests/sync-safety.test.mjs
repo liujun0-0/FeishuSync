@@ -62,6 +62,11 @@ test('three-way merge chooses the side that changed', () => {
   assert.equal(mergeThreeWay('base', 'local', 'remote').hasConflicts, true);
 });
 
+test('three-way merge combines independent line edits', () => {
+  const result = mergeThreeWay('a\nb\nc\nd', 'A\nb\nc\nd', 'a\nb\nC\nd');
+  assert.deepEqual(result, { merged: 'A\nb\nC\nd', hasConflicts: false });
+});
+
 test('path changes distinguish move from copy', () => {
   assert.equal(classifyPathChange({path:'a.md',identity:'1'}, {path:'b.md',identity:'1'}).type, 'move');
   assert.equal(classifyPathChange({path:'a.md',hash:'h'}, {path:'b.md',hash:'h',identity:'2'}).type, 'copy');
