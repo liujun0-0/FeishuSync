@@ -257,6 +257,7 @@ async function main() {
     runFullSync: runFullSyncGuarded,
     subscribeToDocument,
     manifestName,
+    documentPolicies: config.sync?.documentPolicies,
   });
 
   if (initialSync) {

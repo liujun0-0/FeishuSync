@@ -8,6 +8,16 @@
   "sync": {
     "folderPath": "wikid",
     "pollIntervalSeconds": 30,
-    "initialSync": true
+    "initialSync": true,
+    "documentPolicies": {
+      "paths": {
+        "重要文档/只读远程.md": "remote-to-local",
+        "项目说明.md": "local-to-remote",
+        "共享设计.md": "merge"
+      },
+      "docIds": {
+        "doccn_example": "bidirectional"
+      }
+    }
   }
 }

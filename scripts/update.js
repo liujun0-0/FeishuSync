@@ -23,6 +23,7 @@ import { moveWikiNode } from '../api/remote-sync.js';
 import { feishuToMarkdown } from '../api/feishu-md.js';
 import { mergeRemoteIntoLocal, mergeThreeWay } from '../api/merge.js';
 import { beginMoveTransaction, completeMoveTransaction, failMoveTransaction } from '../api/move-transaction.js';
+import { resolveSyncPolicy } from '../api/sync-policy.js';
 
 if (typeof fetch !== 'function') {
   console.error('This CLI requires Node.js 18+ (global fetch).');
@@ -435,6 +436,7 @@ async function main() {
     const fileAbs = path.join(resolvedFolder, fileRel);
     const localInfo = localMap.get(fileRel);
     const localExists = Boolean(localInfo);
+    const syncPolicy = resolveSyncPolicy(config.sync?.documentPolicies, { path: fileRel, docId: doc.documentId, fallback: 'bidirectional' });
 
     if (!existing) {
       if (localExists) {
@@ -518,6 +520,21 @@ async function main() {
       existing.revisionId && doc.revisionId && existing.revisionId !== doc.revisionId;
 
     if (remoteChanged && localChanged) {
+      if (syncPolicy === 'remote-to-local') {
+        const hash = await downloadDocumentToFile(doc.documentId, token, { document_id: doc.documentId, revision_id: doc.revisionId, title: doc.title }, fileAbs);
+        manifestDocs[doc.documentId] = { ...existing, file: fileRel, revisionId: doc.revisionId, hash, baseContent: await fs.readFile(fileAbs, 'utf8').catch(() => null) };
+        localMap.set(fileRel, { ...localInfo, hash });
+        downloaded += 1;
+        continue;
+      }
+      if (syncPolicy === 'local-to-remote') {
+        const markdown = await fs.readFile(localInfo.fullPath, 'utf8');
+        await uploadMarkdownToDocument(doc.documentId, token, markdown);
+        const meta = await fetchDocumentMeta(doc.documentId, token);
+        manifestDocs[doc.documentId] = { ...existing, file: fileRel, revisionId: meta.revision_id ?? meta.revisionId ?? doc.revisionId, hash: localInfo.hash, baseContent: markdown };
+        uploaded += 1;
+        continue;
+      }
       // Try a content-aware short-circuit: when the manifest hash is just
       // stale (Feishu revision drifted without anyone actually editing
       // anything), local and remote usually render to the exact same

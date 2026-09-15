@@ -2,14 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mergeThreeWay } from '../api/merge.js';
 import { beginMoveTransaction, completeMoveTransaction, failMoveTransaction } from '../api/move-transaction.js';
+import { resolveSyncPolicy } from '../api/sync-policy.js';
 import { classifyPathChange } from '../api/move-transaction.js';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
   PENDING_DELETE_GRACE_MS,
+  LOCAL_TO_REMOTE_DELETE_GRACE_MS,
   checkPendingDelete,
   removeEmptyParentDirs,
+  findDocIdByFile,
+  canReuseDocByTitle,
 } from '../api/helpers.js';
 
 test('pending delete requires a continuous seven-day absence', () => {
@@ -21,6 +25,20 @@ test('pending delete requires a continuous seven-day absence', () => {
   assert.equal(checkPendingDelete(entry, now + PENDING_DELETE_GRACE_MS), 'expired');
 });
 
+test('local-to-remote delete grace expires after two minutes', () => {
+  const now = Date.parse('2026-09-15T00:00:00.000Z');
+  const entry = {};
+  assert.equal(checkPendingDelete(entry, now, LOCAL_TO_REMOTE_DELETE_GRACE_MS), 'marked');
+  assert.equal(
+    checkPendingDelete(entry, now + LOCAL_TO_REMOTE_DELETE_GRACE_MS - 1, LOCAL_TO_REMOTE_DELETE_GRACE_MS),
+    'waiting'
+  );
+  assert.equal(
+    checkPendingDelete(entry, now + LOCAL_TO_REMOTE_DELETE_GRACE_MS, LOCAL_TO_REMOTE_DELETE_GRACE_MS),
+    'expired'
+  );
+});
+
 test('invalid or future pending timestamps restart the safety window', () => {
   const now = Date.parse('2026-09-15T00:00:00.000Z');
   for (const pendingDeleteAt of ['invalid', '2026-09-16T00:00:00.000Z']) {
@@ -28,6 +46,27 @@ test('invalid or future pending timestamps restart the safety window', () => {
     assert.equal(checkPendingDelete(entry, now), 'marked');
     assert.equal(entry.pendingDeleteAt, '2026-09-15T00:00:00.000Z');
   }
+});
+
+test('findDocIdByFile matches posix paths', () => {
+  const docs = {
+    a: { file: 'dir/x.md' },
+    b: { file: 'y.md' },
+  };
+  assert.equal(findDocIdByFile(docs, 'dir/x.md'), 'a');
+  assert.equal(findDocIdByFile(docs, 'dir\\x.md'), 'a');
+  assert.equal(findDocIdByFile(docs, 'missing.md'), null);
+});
+
+test('canReuseDocByTitle blocks binding to a doc tracked on another path', () => {
+  const docs = {
+    d1: { file: 'keep/a.md', title: 'Same' },
+  };
+  assert.equal(canReuseDocByTitle(docs, 'd1', 'keep/a.md'), true);
+  assert.equal(canReuseDocByTitle(docs, 'd1', 'other/a.md'), false);
+  // Not in local manifest yet → safe to reuse wiki title match
+  assert.equal(canReuseDocByTitle(docs, 'd2', 'other/a.md'), true);
+  assert.equal(canReuseDocByTitle({ d3: {} }, 'd3', 'new.md'), true);
 });
 
 test('empty-directory cleanup is bounded by root and stops at non-empty parent', async () => {
@@ -81,4 +120,11 @@ test('move transaction is resumable and records failure', () => {
   const completed = completeMoveTransaction({ ...prepared, pendingMove: { ...prepared.pendingMove, state: 'prepared' } }, '2026-09-15T00:00:02.000Z');
   assert.equal(completed.file, 'new/a.md');
   assert.equal(completed.pendingMove, undefined);
+});
+
+test('document policy resolves path before doc id and supports aliases', () => {
+  const policies = { paths: { 'a/b.md': 'local' }, docIds: { d1: 'remote' } };
+  assert.equal(resolveSyncPolicy(policies, { path: 'a/b.md', docId: 'd1' }), 'local-to-remote');
+  assert.equal(resolveSyncPolicy(policies, { path: 'x.md', docId: 'd1' }), 'remote-to-local');
+  assert.equal(resolveSyncPolicy(policies, { path: 'x.md', docId: 'd2' }), 'bidirectional');
 });

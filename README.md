@@ -78,10 +78,31 @@ cp config.example.json config.json
   "sync": {
     "folderPath": "wikid",
     "pollIntervalSeconds": 30,
-    "initialSync": true
+    "initialSync": true,
+    "documentPolicies": {
+      "paths": {
+        "重要文档/只读远程.md": "remote-to-local",
+        "项目说明.md": "local-to-remote",
+        "共享设计.md": "merge"
+      },
+      "docIds": {
+        "doccn_example": "bidirectional"
+      }
+    }
   }
 }
 ```
+
+### 文档级同步策略
+
+`sync.documentPolicies` 可覆盖默认同步策略。优先按相对路径匹配，其次按飞书 `docId` 匹配；未配置的文档继续使用默认策略。
+
+支持的策略：
+
+- `bidirectional`：本地和飞书均可修改
+- `remote-to-local`：线上优先，冲突时覆盖本地
+- `local-to-remote`：本地优先，冲突时覆盖线上
+- `merge`：双方修改时优先进行正文三方合并
 
 **获取配置值：**
 - `auth.clientId` / `auth.clientSecret`：飞书开放平台 → 你的应用 → 凭证与基础信息

@@ -23,6 +23,7 @@ import {
   buildConflictPath,
   resolveFileType,
 } from './helpers.js';
+import { resolveSyncPolicy } from './sync-policy.js';
 
 export const API_BASE = 'https://open.feishu.cn/open-apis';
 const DELETE_BATCH_SIZE = 100;
@@ -1086,6 +1087,7 @@ export function createChangeProcessor({
   runFullSync,
   subscribeToDocument,
   manifestName,
+  documentPolicies,
 }) {
   let processing = false;
   let queued = false;
@@ -1271,16 +1273,10 @@ export function createChangeProcessor({
             manifestDirty = true;
             continue;
           }
-          // Conservative mode: remote trash events are never allowed to
-          // delete local data automatically. A later explicit reconciliation
-          // can handle confirmed deletions.
+          // Conservative mode: remote trash events never auto-delete local
+          // files. Local→remote deletion is handled by local-watch / update.js.
           console.warn(`[realtime-sync] remote trash deferred; local deletion disabled: ${entry.file}`);
           continue;
-          localBatch.delete(entry.file);
-          // 软删除：移到 .feishu-sync-soft-trash/ 目录而非真删
-          // 用户可以从那里恢复（如果误删了飞书文档）
-          await softDeleteLocalFile(fileAbs, rootDir);
-          manifestDirty = true;
         }
         if (manifestDocs[docId]) {
           delete manifestDocs[docId];
@@ -1420,6 +1416,7 @@ export function createChangeProcessor({
         entry?.hash && localHash && entry.hash !== localHash;
       const remoteChanged =
         entry?.revisionId && revisionId && entry.revisionId !== revisionId;
+      const syncPolicy = resolveSyncPolicy(documentPolicies, { path: fileRel, docId, fallback: 'bidirectional' });
 
       if (!entry || !localExists) {
         const hash = await downloadDocumentToFile(
@@ -1445,6 +1442,19 @@ export function createChangeProcessor({
       }
 
       if (remoteChanged && localChanged) {
+        if (syncPolicy === 'remote-to-local') {
+          const hash = await downloadDocumentToFile(docId, token, { document_id: docId, revision_id: revisionId, title }, fileAbs);
+          manifestDocs[docId] = { ...entry, file: fileRel, revisionId, title, hash };
+          manifestDirty = true;
+          continue;
+        }
+        if (syncPolicy === 'local-to-remote') {
+          const markdown = await fs.readFile(fileAbs, 'utf8');
+          await uploadMarkdownToDocument(docId, token, markdown);
+          manifestDocs[docId] = { ...entry, file: fileRel, revisionId, title, hash: localHash, baseContent: markdown };
+          manifestDirty = true;
+          continue;
+        }
         const conflictRel = buildConflictPath(fileRel);
         const conflictAbs = path.join(rootDir, conflictRel);
         await downloadDocumentToFile(
