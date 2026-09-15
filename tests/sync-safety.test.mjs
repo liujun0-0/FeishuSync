@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mergeThreeWay } from '../api/merge.js';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -52,4 +53,10 @@ test('empty-directory cleanup never removes the sync root', async () => {
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+test('three-way merge chooses the side that changed', () => {
+  assert.deepEqual(mergeThreeWay('base', 'base', 'remote'), { merged: 'remote', hasConflicts: false });
+  assert.deepEqual(mergeThreeWay('base', 'local', 'base'), { merged: 'local', hasConflicts: false });
+  assert.equal(mergeThreeWay('base', 'local', 'remote').hasConflicts, true);
 });
