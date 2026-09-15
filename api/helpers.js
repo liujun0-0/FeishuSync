@@ -302,9 +302,9 @@ export function startLocalWatcher(rootDir, options) {
       }
       const relPath = filename ? String(filename) : '';
       if (relPath && !shouldSyncLocalPath(relPath, manifestName)) return;
-      if (isProcessing()) return;
+      if (isProcessing && isProcessing()) return;
 
-      const lastProcessCompletedAt = getLastProcessCompletedAt();
+      const lastProcessCompletedAt = getLastProcessCompletedAt ? getLastProcessCompletedAt() : 0;
       if (relPath && lastProcessCompletedAt) {
         try {
           const fullPath = path.join(rootDir, relPath);
