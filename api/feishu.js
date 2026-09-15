@@ -11,6 +11,7 @@ import {
   readManifest,
   writeManifest,
   hashFile,
+  getFileIdentity,
   sanitizeFilename,
   ensurePosixPath,
   fileExists,
@@ -1093,6 +1094,18 @@ export function createChangeProcessor({
   const recentEvents = new Map();
   const pendingRemote = new Map();
   const pendingLocal = new Set();
+  const eventQueuePath = path.join(rootDir, '.feishu-sync-events.json');
+  let queueWrite = Promise.resolve();
+  const persistQueue = () => {
+    const data = { remote: [...pendingRemote], local: [...pendingLocal], updatedAt: new Date().toISOString() };
+    queueWrite = queueWrite.then(() => fs.writeFile(`${eventQueuePath}.tmp`, JSON.stringify(data), 'utf8').then(() => fs.rename(`${eventQueuePath}.tmp`, eventQueuePath))).catch(() => {});
+  };
+  fs.readFile(eventQueuePath, 'utf8').then((raw) => {
+    const data = JSON.parse(raw);
+    for (const [id, type] of data.remote || []) pendingRemote.set(id, type);
+    for (const rel of data.local || []) pendingLocal.add(rel);
+    if (pendingRemote.size || pendingLocal.size) setTimeout(() => scheduleProcess(), 1000);
+  }).catch(() => {});
 
   const pruneRecent = (now) => {
     for (const [eventId, ts] of recentEvents.entries()) {
@@ -1150,6 +1163,7 @@ export function createChangeProcessor({
     }
 
     pendingRemote.set(fileToken, eventType);
+    persistQueue();
     scheduleProcess();
   };
 
@@ -1164,6 +1178,7 @@ export function createChangeProcessor({
     } else {
       pendingLocal.add('local');
     }
+    persistQueue();
     scheduleProcess();
   };
 
@@ -1177,6 +1192,7 @@ export function createChangeProcessor({
     const localBatch = new Set(pendingLocal);
     pendingRemote.clear();
     pendingLocal.clear();
+    persistQueue();
 
     try {
       await processChanges(remoteBatch, localBatch);
@@ -1234,8 +1250,17 @@ export function createChangeProcessor({
       if (eventType === 'drive.file.trashed_v1') {
         const entry = manifestDocs[docId];
         if (entry?.file) {
-          localBatch.delete(entry.file);
           const fileAbs = path.join(rootDir, entry.file);
+          // A remote trash event can be stale or caused by a local move race.
+          // Never remove a still-present local file immediately; preserve it
+          // so the next full sync can re-upload/rebind it safely.
+          if (await fileExists(fileAbs)) {
+            console.warn(`[realtime-sync] remote trash for ${docId} ignored; local file preserved: ${entry.file}`);
+            delete manifestDocs[docId];
+            manifestDirty = true;
+            continue;
+          }
+          localBatch.delete(entry.file);
           // 软删除：移到 .feishu-sync-soft-trash/ 目录而非真删
           // 用户可以从那里恢复（如果误删了飞书文档）
           await softDeleteLocalFile(fileAbs, rootDir);
@@ -1393,6 +1418,7 @@ export function createChangeProcessor({
           title,
           fileType: resolveFileType({ fileType: entry?.fileType }),
           hash,
+          identity: await getFileIdentity(fileAbs),
         };
         usedPaths.add(fileRel);
         manifestDirty = true;
@@ -1511,6 +1537,18 @@ export function createChangeProcessor({
         manifestDirty = true;
       } else {
         const markdown = await fs.readFile(fileAbs, 'utf8');
+        const localIdentity = await getFileIdentity(fileAbs);
+        const identityMatch = localIdentity && Object.entries(manifestDocs).find(([, e]) => e?.identity === localIdentity);
+        if (identityMatch) {
+          const [trackedId, trackedEntry] = identityMatch;
+          delete trackedEntry.pendingDeleteAt;
+          trackedEntry.file = fileRel;
+          trackedEntry.hash = hash;
+          fileToDoc.set(fileRel, trackedId);
+          manifestDirty = true;
+          console.warn(`[realtime-sync] rebound by file identity: ${fileRel} -> ${trackedId}`);
+          continue;
+        }
         // 防幽灵副本守卫：本地文件无 manifest 条目时，先比对其 H1 标题。
         // 若同标题文档已被跟踪（其他 docId），说明这是一份重复内容——
         // 直接新建会在 wiki 侧再繁殖一个副本（正反馈循环的源头）。
@@ -1525,6 +1563,21 @@ export function createChangeProcessor({
               .filter(Boolean)
           );
           if (trackedTitles.has(titleKey)) {
+            const tracked = Object.entries(manifestDocs).find(([, e]) =>
+              (e?.title || '').toLowerCase() === titleKey
+            );
+            if (tracked) {
+              // A local rename/move arrives as delete(old)+create(new). Rebind
+              // the existing remote doc instead of creating a duplicate.
+              const [trackedId, trackedEntry] = tracked;
+              delete trackedEntry.pendingDeleteAt;
+              trackedEntry.file = fileRel;
+              trackedEntry.hash = hash;
+              fileToDoc.set(fileRel, trackedId);
+              manifestDirty = true;
+              console.warn(`[realtime-sync] rebound moved local file "${fileRel}" to tracked doc ${trackedId}`);
+              continue;
+            }
             console.warn(
               `[realtime-sync] skip creating doc for "${fileRel}": doc titled "${localTitle}" already tracked (ghost-duplicate guard)`
             );
@@ -1546,6 +1599,7 @@ export function createChangeProcessor({
               title: localTitle,
               fileType: 'docx',
               hash: newHash,
+              identity: await getFileIdentity(fileAbs),
             };
             fileToDoc.set(fileRel, wikiMatch.docId);
             usedPaths.add(fileRel);
@@ -1561,6 +1615,7 @@ export function createChangeProcessor({
           title: meta.title || '',
           fileType: 'docx',
           hash,
+          identity: await getFileIdentity(fileAbs),
         };
         fileToDoc.set(fileRel, newDocId);
         usedPaths.add(fileRel);

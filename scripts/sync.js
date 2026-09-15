@@ -34,9 +34,11 @@ const SYNC_DEFAULTS = {
   manifestName: '.feishu-sync.json',
   logEvents: false,
   loggerLevel: 'info',
-  debounceMs: 3000,
+  // File moves on Windows arrive as delete/create bursts. Keep the batch
+  // open long enough to observe both sides before syncing.
+  debounceMs: 10000,
   dedupeWindowMs: 600000,
-  localIgnoreWindowMs: 2000,
+  localIgnoreWindowMs: 5000,
   fileTypes: ['doc', 'docx'],
   subscribeEvents: true,
   eventTypes: [

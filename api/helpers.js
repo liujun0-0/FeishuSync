@@ -65,7 +65,11 @@ export async function writeManifest(folder, manifest, manifestName) {
     updatedAt: new Date().toISOString(),
     docs: manifest.docs || {},
   };
-  await fs.writeFile(manifestPath, `${JSON.stringify(output, null, 2)}\n`, 'utf8');
+  const tempPath = `${manifestPath}.tmp`;
+  await fs.writeFile(tempPath, `${JSON.stringify(output, null, 2)}\n`, 'utf8');
+  // Keep the previous manifest recoverable before replacing it.
+  await fs.copyFile(manifestPath, `${manifestPath}.bak`).catch(() => {});
+  await fs.rename(tempPath, manifestPath);
 }
 
 export function sanitizeFilename(name) {
@@ -186,6 +190,16 @@ export async function deleteLocalFile(filePath) {
     if (err && err.code === 'ENOENT') return false;
     throw err;
   }
+}
+
+// Stable best-effort identity for rename/move detection. NTFS exposes a
+// persistent inode/file-index through dev+ino; fall back to null elsewhere.
+export async function getFileIdentity(filePath) {
+  try {
+    const st = await fs.stat(filePath);
+    if (st.ino) return `${st.dev || 0}:${st.ino}`;
+  } catch {}
+  return null;
 }
 
 // Remove empty directories left behind by a successful file move/delete.

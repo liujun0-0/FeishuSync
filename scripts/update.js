@@ -14,6 +14,7 @@ import {
   resolveFileType,
   removeEmptyParentDirs,
   checkPendingDelete,
+  getFileIdentity,
 } from '../api/helpers.js';
 import {
   deleteRemoteDocument,
@@ -164,7 +165,8 @@ async function main() {
   const localMap = new Map();
   for (const file of localFiles) {
     const hash = await hashFile(file.fullPath);
-    localMap.set(file.relPath, { ...file, hash });
+    const identity = await getFileIdentity(file.fullPath);
+    localMap.set(file.relPath, { ...file, hash, identity });
   }
 
   const wikiDocs = [];
@@ -323,7 +325,7 @@ async function main() {
       const oldOnDisk = localMap.has(fileRel);
       if (!oldOnDisk) {
         for (const [relPath, li] of localMap.entries()) {
-          if (relPath !== fileRel && li.hash === existing.hash) {
+          if (relPath !== fileRel && ((existing.identity && li.identity === existing.identity) || li.hash === existing.hash)) {
             fileRel = relPath;
             localMoved = true;
             const localDir = path.posix.dirname(fileRel);
@@ -533,6 +535,12 @@ async function main() {
         },
         conflictAbs
       );
+      existing.lastConflict = {
+        at: new Date().toISOString(),
+        localPath: fileRel,
+        remoteRevision: doc.revisionId,
+        conflictPath: conflictRel,
+      };
       if (preferLocal) {
         // User opted into "local wins": push local .md to Feishu and
         // refresh the manifest to the new revision so future syncs match.
@@ -616,6 +624,7 @@ async function main() {
       title: doc.title,
       fileType: resolveFileType(doc, existing),
       hash: localInfo.hash || existing.hash,
+      identity: localInfo.identity || existing.identity || null,
     };
     skipped += 1;
   }
