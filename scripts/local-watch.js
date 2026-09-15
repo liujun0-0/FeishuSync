@@ -1,9 +1,21 @@
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { readConfig, resolveSyncFolder, startLocalWatcher, shouldSyncLocalPath } from '../api/helpers.js';
+import { loadState } from '../api/sync-state.js';
 
 const config = await readConfig();
 const rootDir = resolveSyncFolder(config.sync?.folderPath || 'wikid');
+const state = await loadState(rootDir, '.feishu-sync.json');
+const seen = new Set();
+for (const [id, entry] of Object.entries(state.docs || {})) {
+  if (!entry.file) continue;
+  if (seen.has(entry.file)) console.warn(`[local-watch] duplicate manifest path: ${entry.file} (${id})`);
+  seen.add(entry.file);
+  if (!await import('node:fs/promises').then(fs => fs.stat(path.join(rootDir, entry.file)).catch(() => null))) {
+    console.warn(`[local-watch] manifest file missing: ${entry.file}`);
+  }
+  if (entry.pendingDeleteAt) console.warn(`[local-watch] pending delete: ${entry.file}`);
+}
 let running = false;
 let queued = null;
 const retries = new Map();
