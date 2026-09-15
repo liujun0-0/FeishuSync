@@ -83,7 +83,10 @@ async function main() {
   const config = await readConfig();
   const mode = String(config.sync?.mode || 'local-to-remote').toLowerCase();
   if (mode === 'local-to-remote' && process.env.FEISHU_BIDIRECTIONAL !== '1') {
-    console.log('[realtime-sync] local-to-remote default mode; bidirectional engine not started');
+    // Keep the default safe: watch local markdown and upload only changed
+    // files. Do not subscribe to remote events or run remote deletion logic.
+    console.log('[realtime-sync] local-to-remote default mode; starting local-only watcher');
+    await import('./local-watch.js');
     return;
   }
   const tokenPath = resolvePath(requireConfigValue(config, 'tokenPath'));

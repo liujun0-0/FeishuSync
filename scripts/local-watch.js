@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { readConfig, resolveSyncFolder, startLocalWatcher, shouldSyncLocalPath } from '../api/helpers.js';
+import { readConfig } from '../config.js';
+import { resolveSyncFolder, startLocalWatcher, shouldSyncLocalPath } from '../api/helpers.js';
 import { loadState } from '../api/sync-state.js';
 
 const config = await readConfig();
