@@ -7,6 +7,7 @@
   },
   "sync": {
     "folderPath": "wikid",
+    "mode": "local-to-remote",
     "pollIntervalSeconds": 30,
     "initialSync": true,
     "documentPolicies": {

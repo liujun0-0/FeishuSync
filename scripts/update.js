@@ -151,6 +151,7 @@ async function main() {
   // before the upload so nothing is lost. Use this when you know your local
   // copy is the one you want to keep.
   const preferLocal = process.argv.includes('--prefer-local');
+  const remoteOnly = process.argv.includes('--remote-only');
   if (preferLocal) {
     console.log('[prefer-local] conflicts will overwrite Feishu with the local .md (remote version is saved as *.remote.md first)');
   }
@@ -233,7 +234,7 @@ async function main() {
   let deletedRemote = 0;
   let movedRemote = 0;
 
-  for (const [fileRel, localInfo] of localMap.entries()) {
+  for (const [fileRel, localInfo] of remoteOnly ? [] : localMap.entries()) {
     if (existingFileToDoc.has(fileRel)) continue;
     const sameHash = Object.entries(manifestDocs).find(([, e]) => e.hash && localInfo.hash && e.hash === localInfo.hash);
     if (sameHash) {
@@ -504,6 +505,10 @@ async function main() {
         skipped += 1;
         continue;
       }
+      if (remoteOnly) {
+        skipped += 1;
+        continue;
+      }
       await deleteRemoteDocument(doc.documentId, token, resolveFileType(doc, existing));
       delete manifestDocs[doc.documentId];
       deletedRemote += 1;
@@ -520,7 +525,7 @@ async function main() {
       existing.revisionId && doc.revisionId && existing.revisionId !== doc.revisionId;
 
     if (remoteChanged && localChanged) {
-      if (syncPolicy === 'remote-to-local') {
+      if (remoteOnly || syncPolicy === 'remote-to-local') {
         const hash = await downloadDocumentToFile(doc.documentId, token, { document_id: doc.documentId, revision_id: doc.revisionId, title: doc.title }, fileAbs);
         manifestDocs[doc.documentId] = { ...existing, file: fileRel, revisionId: doc.revisionId, hash, baseContent: await fs.readFile(fileAbs, 'utf8').catch(() => null) };
         localMap.set(fileRel, { ...localInfo, hash });
@@ -661,7 +666,7 @@ async function main() {
       continue;
     }
 
-    if (localChanged && !remoteChanged) {
+    if (localChanged && !remoteChanged && !remoteOnly) {
       const markdown = await fs.readFile(localInfo.fullPath, 'utf8');
       await uploadMarkdownToDocument(doc.documentId, token, markdown);
       const meta = await fetchDocumentMeta(doc.documentId, token);
@@ -713,7 +718,7 @@ async function main() {
     if (entry.file) fileToDoc.set(entry.file, docId);
   }
 
-  for (const [fileRel, localInfo] of localMap.entries()) {
+  for (const [fileRel, localInfo] of remoteOnly ? [] : localMap.entries()) {
     if (fileToDoc.has(fileRel)) continue;
     const sameHash = Object.entries(manifestDocs).find(([, e]) => e.hash && localInfo.hash && e.hash === localInfo.hash);
     if (sameHash) {

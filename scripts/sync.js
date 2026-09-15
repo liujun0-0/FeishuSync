@@ -82,6 +82,7 @@ function requirePositiveNumber(config, keyPath) {
 async function main() {
   const config = await readConfig();
   const mode = String(config.sync?.mode || 'local-to-remote').toLowerCase();
+  const remoteOnly = mode === 'remote-to-local' && process.env.FEISHU_BIDIRECTIONAL !== '1';
   if (mode === 'local-to-remote' && process.env.FEISHU_BIDIRECTIONAL !== '1') {
     // Keep the default safe: watch local markdown and upload only changed
     // files. Do not subscribe to remote events or run remote deletion logic.
@@ -168,7 +169,8 @@ async function main() {
     const reasonText = reason ? ` (${reason})` : '';
     console.log(`[realtime-sync] running full sync${reasonText}`);
     const result = await new Promise((resolve) => {
-      const child = spawn(process.execPath, [path.join(__dirname, 'update.js')], {
+      const updateArgs = remoteOnly ? [path.join(__dirname, 'update.js'), '--remote-only'] : [path.join(__dirname, 'update.js')];
+      const child = spawn(process.execPath, updateArgs, {
         stdio: 'inherit',
         windowsHide: true,
       });
@@ -280,15 +282,19 @@ async function main() {
   }, REV_CHECK_MS);
   console.log(`[realtime-sync] revision fallback every ${REV_CHECK_MS / 1000}s`);
 
-  startLocalWatcher(rootDir, {
-    onChange: handleLocalChange,
-    logEvents,
-    localIgnoreWindowMs,
-    getLastProcessCompletedAt,
-    isProcessing,
-    shouldIgnoreLocal: () => ignoreLocalChanges,
-    manifestName,
-  });
+  if (!remoteOnly) {
+    startLocalWatcher(rootDir, {
+      onChange: handleLocalChange,
+      logEvents,
+      localIgnoreWindowMs,
+      getLastProcessCompletedAt,
+      isProcessing,
+      shouldIgnoreLocal: () => ignoreLocalChanges,
+      manifestName,
+    });
+  } else {
+    console.log('[realtime-sync] remote-to-local mode; local watcher disabled');
+  }
 
   const wsClient = new Lark.WSClient({
     appId,

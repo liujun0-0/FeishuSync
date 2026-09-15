@@ -147,6 +147,8 @@ npm run sync:bidirectional
 
 双向模式会处理远程新增、远程修改、远程移动及冲突；默认模式不会因为远程状态变化而覆盖或删除本地文件。
 
+也可以在 `config.json` 中设置全局单向模式：`sync.mode` 支持 `local-to-remote`（默认）、`remote-to-local` 或 `bidirectional`。其中 `remote-to-local` 只下载线上变更，不监听本地上传；文档级 `documentPolicies` 可进一步覆盖单个文档的策略。
+
 ### 6. 开机自启
 
 **Windows：**
