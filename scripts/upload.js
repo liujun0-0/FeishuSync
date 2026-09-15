@@ -101,6 +101,9 @@ export async function main() {
     title,
     fileType: 'docx',
     identity,
+    lastMove: identityEntry && identityEntry[1].file !== rel
+      ? { from: identityEntry[1].file, to: rel, at: new Date().toISOString() }
+      : undefined,
   };
   await saveState(syncRoot, state, '.feishu-sync.json');
 }
