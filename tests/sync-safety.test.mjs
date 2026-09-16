@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mergeThreeWay } from '../api/merge.js';
 import { beginMoveTransaction, completeMoveTransaction, failMoveTransaction } from '../api/move-transaction.js';
 import { resolveSyncPolicy } from '../api/sync-policy.js';
+import { markdownToBlocks } from '../api/feishu-md.js';
 import { classifyPathChange } from '../api/move-transaction.js';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -127,4 +128,11 @@ test('document policy resolves path before doc id and supports aliases', () => {
   assert.equal(resolveSyncPolicy(policies, { path: 'a/b.md', docId: 'd1' }), 'local-to-remote');
   assert.equal(resolveSyncPolicy(policies, { path: 'x.md', docId: 'd1' }), 'remote-to-local');
   assert.equal(resolveSyncPolicy(policies, { path: 'x.md', docId: 'd2' }), 'bidirectional');
+});
+
+test('underscores inside identifiers remain literal markdown text', () => {
+  const { title, blocks } = markdownToBlocks('# feature/non_broadcast_flow_recovery_20260904\n\nvalue');
+  const runs = blocks.flatMap((b) => b.text?.elements || b.heading1?.elements || []);
+  assert.equal(runs.some((r) => r.text_run?.text_element_style?.italic), false);
+  assert.equal(title, 'feature/non_broadcast_flow_recovery_20260904');
 });

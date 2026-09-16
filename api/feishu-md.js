@@ -554,7 +554,9 @@ function findNextInlineToken(text) {
     { type: 'bold', regex: /__([^_]+)__/ },
     { type: 'strike', regex: /~~([^~]+)~~/ },
     { type: 'italic', regex: /\*([^*]+)\*/ },
-    { type: 'italic', regex: /_([^_]+)_/ },
+    // An underscore inside an identifier/path is literal text, not emphasis
+    // (e.g. feature/non_broadcast_flow_recovery_20260904).
+    { type: 'italic', regex: /(?<![A-Za-z0-9])_([^_]+)_(?![A-Za-z0-9])/ },
   ];
 
   let best = null;
