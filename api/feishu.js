@@ -774,8 +774,8 @@ export async function createDocument(token, title) {
 // 本地 Markdown 的文件名，避免最终出现 import-xxxx.md 这类临时名称。
 export async function renameDocument(documentId, token, title) {
   if (!documentId || !title) return;
-  // 文档标题属于 Drive 文件元数据；docx PATCH 不接受 title 参数。
-  await apiPatch(`/drive/v1/files/${documentId}`, token, { name: title });
+  // Drive 文件标题接口使用 new_title，并要求显式声明资源类型。
+  await apiPatch(`/drive/v1/files/${documentId}`, token, { new_title: title }, { type: 'docx' });
 }
 
 export async function renameWikiNode(spaceId, token, nodeToken, title) {
