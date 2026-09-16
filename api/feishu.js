@@ -29,6 +29,7 @@ export const API_BASE = 'https://open.feishu.cn/open-apis';
 const DELETE_BATCH_SIZE = 100;
 const CREATE_BATCH_SIZE = 100;
 const REQUEST_TIMEOUT_MS = 60_000;
+let importTaskQueue = Promise.resolve();
 
 /**
  * Token 热更新支持。
@@ -50,6 +51,9 @@ export function setTokenReloader(fn) {
 // 触发 token 重载并重试的错误码：
 // 99991677 = access token expired；99991661 = access token invalid
 const TOKEN_RELOAD_CODES = new Set([99991677, 99991661]);
+// Feishu sometimes returns HTTP 400 with business code 9499 instead of HTTP
+// 429 for import-task throttling. Treat both forms as transient rate limits.
+const RATE_LIMIT_CODES = new Set([9499, 99991400]);
 
 export async function apiRequest(method, pathSuffix, token, { query = {}, body } = {}) {
   const url = new URL(`${API_BASE}${pathSuffix}`);
@@ -115,6 +119,18 @@ export async function apiRequest(method, pathSuffix, token, { query = {}, body }
     }
 
     if (data.code !== 0) {
+      if (RATE_LIMIT_CODES.has(Number(data.code))) {
+        const retryAfter = Number(response.headers.get('retry-after'));
+        const serverDelay = Number(data.retry_after || data.retryAfter || 0) * 1000;
+        const delayMs = Math.min(30_000, Math.max(
+          Number.isFinite(retryAfter) ? retryAfter * 1000 : 0,
+          Number.isFinite(serverDelay) ? serverDelay : 0,
+          2000 * 2 ** attempt,
+        ));
+        console.warn(`[feishu] rate limited (${data.code}); retrying in ${Math.round(delayMs / 1000)}s`);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        continue;
+      }
       // token 失效自愈：重读 token 文件换新 token 重试一次
       if (TOKEN_RELOAD_CODES.has(data.code) && tokenReloader && !tokenReloaded) {
         const fresh = await tokenReloader().catch(() => null);
@@ -131,7 +147,7 @@ export async function apiRequest(method, pathSuffix, token, { query = {}, body }
     return data.data ?? data;
   }
 
-  throw new Error('API error: rate limited (429) after retries.');
+  throw new Error('API error: rate limited after retries (HTTP 429 or Feishu throttle code).');
 }
 
 export function apiGet(pathSuffix, token, query) {
@@ -857,7 +873,7 @@ export async function importMarkdownToDocument({
     // mount_type=1, mount_key='' → 导入到调用者云盘根目录。
     // 不直接挂到 wiki space：import_task API 不支持挂到 wiki，
     // 改在导入完成后调 addDocToWiki 把 docx 移到 wiki。
-    const importRes = await apiPost(
+    const submitImportTask = async () => apiPost(
       '/drive/v1/import_tasks',
       token,
       {
@@ -868,6 +884,11 @@ export async function importMarkdownToDocument({
         point: { mount_type: 1, mount_key: '' },
       }
     );
+    // Import-task creation is globally rate limited; serialize submissions
+    // even when multiple local files are queued at once.
+    const importResPromise = importTaskQueue.then(submitImportTask, submitImportTask);
+    importTaskQueue = importResPromise.then(() => undefined, () => undefined);
+    const importRes = await importResPromise;
     const ticket = importRes?.ticket || importRes?.data?.ticket;
     if (!ticket) {
       throw new Error(
