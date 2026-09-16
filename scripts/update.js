@@ -210,7 +210,10 @@ async function main() {
 
   const wikiPathIndex = new Map();
   for (const node of syncableWikiDocs) {
-    if (!node.hasChild || !node.nodeToken || !node.path) continue;
+    // A newly-created/empty wiki folder may report hasChild=false. It is
+    // still a valid parent and must be indexed, otherwise every sync creates
+    // another folder with the same title.
+    if (!node.nodeToken || !node.path) continue;
     wikiPathIndex.set(node.path, {
       title: node.title,
       nodeToken: node.nodeToken,

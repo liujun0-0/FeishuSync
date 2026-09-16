@@ -96,10 +96,29 @@ export async function main() {
     let parentPath = '';
     for (const part of parts) {
       parentPath = parentPath ? `${parentPath}/${part}` : part;
-      let hit = nodes.find((n) => n.path === parentPath || n.path?.endsWith(`/${parentPath}`));
+      const normalize = (value) => String(value || '').replaceAll('\\', '/').replace(/^\/+|\/+$/g, '').toLocaleLowerCase();
+      const wanted = normalize(parentPath);
+      let hit = nodes.find((n) => normalize(n.path) === wanted || normalize(n.path).endsWith(`/${wanted}`));
       if (!hit) {
-        const made = await createWikiNode(spaceId, token, part, parentToken);
-        hit = { nodeToken: made.node_token };
+        const lockKey = `${spaceId}:${wanted}`;
+        if (!globalThis.__feishuParentLocks) globalThis.__feishuParentLocks = new Map();
+        let lock = globalThis.__feishuParentLocks.get(lockKey);
+        if (!lock) {
+          lock = (async () => {
+            // Re-scan after waiting for another uploader; the first scan may
+            // have raced with a concurrent sync worker.
+            const fresh = [];
+            await collectWikiDocNodes(spaceId, token, undefined, fresh);
+            const found = fresh.find((n) => normalize(n.path) === wanted || normalize(n.path).endsWith(`/${wanted}`));
+            if (found) return found;
+            const made = await createWikiNode(spaceId, token, part, parentToken);
+            return { nodeToken: made.node_token, path: parentPath, title: part };
+          })();
+          globalThis.__feishuParentLocks.set(lockKey, lock);
+          lock.finally(() => globalThis.__feishuParentLocks.delete(lockKey)).catch(() => {});
+        }
+        hit = await lock;
+        nodes.push(hit);
       }
       parentToken = hit.nodeToken;
     }
