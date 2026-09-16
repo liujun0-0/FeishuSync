@@ -2,6 +2,7 @@
   "tokenPath": "./user-token.txt",
   "wikiSpaceId": "你的飞书知识库空间ID",
   "auth": {
+    "mode": "tenant",
     "clientId": "cli_你的应用ID",
     "clientSecret": "你的应用密钥"
   },

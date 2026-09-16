@@ -98,7 +98,9 @@ export async function main() {
       parentPath = parentPath ? `${parentPath}/${part}` : part;
       const normalize = (value) => String(value || '').replaceAll('\\', '/').replace(/^\/+|\/+$/g, '').toLocaleLowerCase();
       const wanted = normalize(parentPath);
-      let hit = nodes.find((n) => normalize(n.path) === wanted || normalize(n.path).endsWith(`/${wanted}`));
+      // Match the complete wiki path only. Suffix matching is unsafe when
+      // separate branches contain folders with the same name.
+      let hit = nodes.find((n) => normalize(n.path) === wanted);
       if (!hit) {
         const lockKey = `${spaceId}:${wanted}`;
         if (!globalThis.__feishuParentLocks) globalThis.__feishuParentLocks = new Map();
@@ -109,7 +111,7 @@ export async function main() {
             // have raced with a concurrent sync worker.
             const fresh = [];
             await collectWikiDocNodes(spaceId, token, undefined, fresh);
-            const found = fresh.find((n) => normalize(n.path) === wanted || normalize(n.path).endsWith(`/${wanted}`));
+            const found = fresh.find((n) => normalize(n.path) === wanted);
             if (found) return found;
             const made = await createWikiNode(spaceId, token, part, parentToken);
             return { nodeToken: made.node_token, path: parentPath, title: part };
@@ -171,8 +173,15 @@ export async function main() {
       await moveWikiNode(spaceId, token, node.nodeToken, parentToken);
     }
     if (node?.title !== title) {
-      await renameDocument(documentId, token, title);
-      if (node?.nodeToken) await renameWikiNode(spaceId, token, node.nodeToken, title);
+      // Renaming is metadata-only.  A missing/temporarily unavailable write
+      // scope must never make the content upload fail or cause the local file
+      // to be treated as an untracked/deletable file by the watcher.
+      try {
+        await renameDocument(documentId, token, title);
+        if (node?.nodeToken) await renameWikiNode(spaceId, token, node.nodeToken, title);
+      } catch (err) {
+        console.warn(`[upload] rename deferred for ${rel}: ${err.message || err}`);
+      }
     }
   }
 

@@ -169,6 +169,7 @@ async function main() {
   }
 
   const config = await readConfig();
+  const syncMode = String(config.sync?.mode || 'local-to-remote').toLowerCase();
   const spaceId = requireConfigValue(config, 'wikiSpaceId');
   const folderInput = requireConfigValue(config, 'sync.folderPath');
   const manifestName = MANIFEST_NAME;
@@ -214,19 +215,15 @@ async function main() {
     // still a valid parent and must be indexed, otherwise every sync creates
     // another folder with the same title.
     if (!node.nodeToken || !node.path) continue;
+    // Local paths mirror the complete wiki path from the space root.
+    // Do not add suffix/"without root" aliases: two branches may contain
+    // identically named folders, and alias matching can silently select the
+    // wrong branch and move/upload documents into it.
     wikiPathIndex.set(node.path, {
       title: node.title,
       nodeToken: node.nodeToken,
       parentNodeToken: node.parentNodeToken,
     });
-    const parts = node.path.split('/');
-    if (parts.length > 1) {
-      wikiPathIndex.set(parts.slice(1).join('/'), {
-        title: node.title,
-        nodeToken: node.nodeToken,
-        parentNodeToken: node.parentNodeToken,
-      });
-    }
   }
   console.log(`[update] indexed wiki container paths: ${wikiPathIndex.size}`);
   const existingFileToDoc = new Map();
@@ -338,9 +335,13 @@ async function main() {
     const baseName = sanitizeFilename(doc.title) || doc.documentId;
     // Build the desired relative path: include the wiki parent path so the
     // local file ends up in a subdirectory mirroring the Feishu tree.
-    const desiredRelative = doc.parentPath
-      ? `${doc.parentPath}/${baseName}.md`
-      : `${baseName}.md`;
+    const generatedImportTitle = /^import-[a-z0-9]{4,}(?:\.md)?$/i.test(String(doc.title || ''));
+    // import_task names are transient implementation names, not user file
+    // names.  Never derive a local path from them when an existing mapping is
+    // available; doing so can move/overwrite a real local document.
+    const desiredRelative = (generatedImportTitle && existing?.file)
+      ? existing.file
+      : (doc.parentPath ? `${doc.parentPath}/${baseName}.md` : `${baseName}.md`);
     let fileRel = existing?.file;
     let localMoved = false;
     let moveFailed = false;
@@ -370,7 +371,7 @@ async function main() {
                   wikiPathIndex
                 );
             }
-            if (parentToken !== null) {
+            if (parentToken !== null && parentToken !== doc.nodeToken) {
               const moveFrom = existing.file;
               const moveTo = relPath;
               manifestDocs[doc.documentId] = beginMoveTransaction(existing, moveFrom, moveTo);
@@ -390,7 +391,7 @@ async function main() {
               }
               if (!moveFailed) localMoved = true;
             }
-            else if (localDirNorm === remoteDir) {
+            else if (localDirNorm === remoteDir || parentToken === doc.nodeToken) {
               localMoved = true;
             }
             }
@@ -409,7 +410,10 @@ async function main() {
     // Skip when the local move detection already picked a target: the user
     // moved the file locally, so honoring Feishu's position would undo it.
     let desiredRel = null;
-    if (!localMoved) {
+    // In local-to-remote mode an existing manifest path is authoritative.
+    // Never follow a remote-only rename/move back onto the local filesystem;
+    // the remote node will be moved to the local parent below instead.
+    if (!localMoved && !(syncMode === 'local-to-remote' && existing)) {
       if (!existing && localMap.has(desiredRelative)) {
         desiredRel = desiredRelative;
       } else {
@@ -431,7 +435,15 @@ async function main() {
       const oldInfo = localMap.get(oldRel);
       const oldAbs = path.join(resolvedFolder, oldRel);
       const newAbs = path.join(resolvedFolder, desiredRel);
-      if (oldInfo) {
+      if (oldInfo && path.resolve(oldAbs) !== path.resolve(newAbs)) {
+        const targetExists = await fs.stat(newAbs).then((s) => s.isFile()).catch(() => false);
+        if (targetExists) {
+          // Never overwrite a real local file during remote rename
+          // reconciliation. Keep the manifest path and surface the conflict.
+          console.warn(`[rename-guard] keep ${oldRel}; target already exists: ${desiredRel}`);
+          skipped += 1;
+          continue;
+        }
         await fs.mkdir(path.dirname(newAbs), { recursive: true });
         let renamed = false;
         try {
@@ -455,7 +467,28 @@ async function main() {
     const fileAbs = path.join(resolvedFolder, fileRel);
     const localInfo = localMap.get(fileRel);
     const localExists = Boolean(localInfo);
-    const syncPolicy = resolveSyncPolicy(config.sync?.documentPolicies, { path: fileRel, docId: doc.documentId, fallback: 'bidirectional' });
+    const syncPolicy = resolveSyncPolicy(config.sync?.documentPolicies, { path: fileRel, docId: doc.documentId, fallback: syncMode });
+
+    // Local-to-remote also mirrors the local parent hierarchy. If Feishu was
+    // moved independently, repair the remote node's parent instead of moving
+    // the local file to follow Feishu.
+    if (syncMode === 'local-to-remote' && existing && localExists && doc.nodeToken) {
+      const localDir = path.posix.dirname(fileRel);
+      const localDirNorm = localDir === '.' ? '' : localDir;
+      const remoteDir = doc.parentPath || '';
+      if (localDirNorm && localDirNorm !== remoteDir) {
+        const parentToken = await ensureParentPath(spaceId, token, localDirNorm.split('/'), wikiPathIndex);
+        if (parentToken && parentToken !== doc.nodeToken) {
+          try {
+            await moveWikiNode(spaceId, token, doc.nodeToken, parentToken);
+            movedRemote += 1;
+            console.log(`[local-to-remote] repaired remote parent for ${fileRel}`);
+          } catch (err) {
+            console.warn(`[local-to-remote] failed to repair remote parent for ${fileRel}: ${err.message || err}`);
+          }
+        }
+      }
+    }
 
     if (!existing) {
       if (localExists) {
@@ -659,7 +692,7 @@ async function main() {
       continue;
     }
 
-    if (remoteChanged && !localChanged) {
+    if (remoteChanged && !localChanged && (remoteOnly || syncPolicy === 'remote-to-local')) {
       const hash = await downloadDocumentToFile(
         doc.documentId,
         token,
@@ -681,6 +714,25 @@ async function main() {
       };
       localMap.set(fileRel, { ...localInfo, hash });
       downloaded += 1;
+      continue;
+    }
+
+    // Local-to-remote is authoritative even when only Feishu changed. Push
+    // the local snapshot back so a remote edit cannot silently overwrite it.
+    if (remoteChanged && !localChanged && syncPolicy === 'local-to-remote' && !remoteOnly) {
+      const markdown = await fs.readFile(localInfo.fullPath, 'utf8');
+      await uploadMarkdownToDocument(doc.documentId, token, markdown);
+      const meta = await fetchDocumentMeta(doc.documentId, token);
+      manifestDocs[doc.documentId] = {
+        ...existing,
+        file: fileRel,
+        revisionId: meta.revision_id ?? meta.revisionId ?? doc.revisionId,
+        title: meta.title || doc.title,
+        fileType: resolveFileType(doc, existing),
+        hash: localInfo.hash,
+        baseContent: markdown,
+      };
+      uploaded += 1;
       continue;
     }
 

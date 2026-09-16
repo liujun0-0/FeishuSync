@@ -72,6 +72,7 @@ cp config.example.json config.json
   "tokenPath": "./user-token.txt",
   "wikiSpaceId": "你的飞书知识库空间ID",
   "auth": {
+    "mode": "tenant",
     "clientId": "cli_你的应用ID",
     "clientSecret": "你的应用密钥"
   },
@@ -108,6 +109,11 @@ cp config.example.json config.json
 - `auth.clientId` / `auth.clientSecret`：飞书开放平台 → 你的应用 → 凭证与基础信息
 - `wikiSpaceId`：飞书知识库 → 知识库设置 → 空间 ID（URL 里的那串 ID）
 
+`auth.mode` 默认为 `user`（需要浏览器 OAuth）。设置为 `tenant` 后使用应用身份
+`tenant_access_token`，无需浏览器授权；需要管理员在飞书开放平台开通上述权限，
+并将目标知识库根目录共享给应用机器人。`clientSecret` 只保存在本地 `config.json`，
+不要提交到 Git。
+
 ### 3. 飞书应用权限
 
 在飞书开放平台 → 你的应用 → 权限管理，确保开通以下权限：
@@ -122,7 +128,7 @@ cp config.example.json config.json
 | `wiki:wiki` | 读写知识库节点 |
 | `offline_access` | 获取 refresh_token（长期授权）|
 
-### 4. 首次授权
+### 4. 首次授权（仅 user 模式）
 
 ```bash
 npm run auth

@@ -13,6 +13,7 @@ const PORT = 7777;
 const REDIRECT_URI = `http://localhost:${PORT}/callback`;
 const AUTH_URL = 'https://accounts.feishu.cn/open-apis/authen/v1/authorize';
 const TOKEN_URL = 'https://open.feishu.cn/open-apis/authen/v2/oauth/token';
+const TENANT_TOKEN_URL = 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal';
 const AUTH_URL_FILE = path.join(ROOT, 'feishu-auth-url.txt');
 const REFRESH_TOKEN_FILE = path.join(ROOT, '.feishu-sync-refresh-token');
 const TOKEN_REQUEST_TIMEOUT_MS = 30_000;
@@ -102,7 +103,7 @@ function buildAuthUrl(clientId) {
   // scopes, so adding these takes effect on the next interactive re-auth.
   url.searchParams.set(
     'scope',
-    'docx:document docx:document:write_only docs:doc drive:drive drive:file:upload offline_access wiki:wiki'
+    'docx:document docx:document:write_only docs:doc drive:file:upload offline_access wiki:wiki'
   );
   return url.toString();
 }
@@ -202,6 +203,24 @@ async function refreshUserAccessToken({ clientId, clientSecret, refreshToken }) 
   return data;
 }
 
+// App-identity mode: does not require a browser or a user refresh token.
+// The returned tenant token is short lived; the loop below renews it before
+// expiry using the app credentials.
+async function fetchTenantAccessToken({ clientId, clientSecret }) {
+  const response = await fetch(TENANT_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ app_id: clientId, app_secret: clientSecret }),
+    signal: AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS),
+  });
+  const data = await response.json();
+  if (data.code !== 0 || !data.tenant_access_token) {
+    const message = data.msg || data.error_description || data.error || 'Unknown error';
+    throw new TokenRequestError(`Tenant token request failed (${data.code ?? response.status}): ${message}`, data.code);
+  }
+  return { access_token: data.tenant_access_token, expires_in: data.expire || 7200 };
+}
+
 function isTokenRequestError(err) {
   return err instanceof TokenRequestError;
 }
@@ -233,7 +252,27 @@ async function main() {
   const config = await readConfig();
   const clientId = requireConfigValue(config, 'auth.clientId');
   const clientSecret = requireConfigValue(config, 'auth.clientSecret');
+  const authMode = config.auth?.mode || 'user';
   const tokenPath = resolvePath(requireConfigValue(config, 'tokenPath'));
+
+  if (authMode === 'tenant') {
+    console.log('[auth] 使用应用身份模式（tenant_access_token），无需浏览器授权。');
+    while (!shuttingDown) {
+      try {
+        const tokenData = await fetchTenantAccessToken({ clientId, clientSecret });
+        await writeTokenFile(tokenPath, tokenData.access_token);
+        const expiresIn = Number(tokenData.expires_in || 7200);
+        const waitSeconds = Math.max(60, expiresIn - Math.max(Math.ceil(expiresIn * 0.2), 60));
+        console.log(`[auth] Tenant token refreshed. Expires in ${expiresIn}s. Next refresh in ${waitSeconds}s.`);
+        await sleep(waitSeconds * 1000);
+      } catch (err) {
+        if (shuttingDown) break;
+        console.error('[auth] Tenant token error:', err.message || err);
+        await sleep(30_000);
+      }
+    }
+    return;
+  }
 
   const server = createServer();
   await new Promise((resolve, reject) => {
