@@ -115,8 +115,10 @@ cp config.example.json config.json
 | 权限 | 用途 |
 |---|---|
 | `docx:document` | 读写文档内容 |
+| `docx:document:write_only` | 修改在线文档标题和正文 |
 | `docs:doc` | 读写旧版文档 |
 | `drive:drive` | 云空间文件操作（图片上传等）|
+| `drive:file:upload` | 导入 Markdown 和更新云文档标题 |
 | `wiki:wiki` | 读写知识库节点 |
 | `offline_access` | 获取 refresh_token（长期授权）|
 

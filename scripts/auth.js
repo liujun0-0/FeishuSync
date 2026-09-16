@@ -97,7 +97,13 @@ function buildAuthUrl(clientId) {
   url.searchParams.set('client_id', clientId);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('redirect_uri', REDIRECT_URI);
-  url.searchParams.set('scope', 'docx:document docs:doc drive:drive offline_access wiki:wiki');
+  // Include granular write scopes required by Drive title updates and
+  // import_task-created docx files. Existing refresh tokens cannot gain new
+  // scopes, so adding these takes effect on the next interactive re-auth.
+  url.searchParams.set(
+    'scope',
+    'docx:document docx:document:write_only docs:doc drive:drive drive:file:upload offline_access wiki:wiki'
+  );
   return url.toString();
 }
 
