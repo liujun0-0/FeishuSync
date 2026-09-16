@@ -16,7 +16,7 @@ import {
   checkPendingDelete,
   getFileIdentity,
 } from '../api/helpers.js';
-import { collectWikiDocNodes, createWikiNode, uploadMarkdownToDocument, createDocumentFromMarkdown } from '../api/feishu.js';
+import { collectWikiDocNodes, createWikiNode, uploadMarkdownToDocument, createDocumentFromMarkdown, renameDocument, renameWikiNode } from '../api/feishu.js';
 import { deleteRemoteDocument } from '../api/remote-delete.js';
 import { fetchDocumentMeta, fetchChildrenCount, fetchAllBlocks, downloadDocumentToFile } from '../api/remote-download.js';
 import { moveWikiNode } from '../api/remote-sync.js';
@@ -34,6 +34,18 @@ const MANIFEST_NAME = '.feishu-sync.json';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function ensureRemoteTitle(spaceId, token, documentId, markdown) {
+  const match = String(markdown || '').match(/^#\s+(.+?)\s*$/m);
+  const title = match?.[1]?.trim();
+  if (!title || !documentId) return title || '';
+  await renameDocument(documentId, token, title);
+  const nodes = [];
+  await collectWikiDocNodes(spaceId, token, undefined, nodes);
+  const node = nodes.find((item) => item.documentId === documentId);
+  if (node?.nodeToken) await renameWikiNode(spaceId, token, node.nodeToken, title);
+  return title;
 }
 
 async function readFreshToken(tokenPath) {
@@ -266,6 +278,9 @@ async function main() {
       markdown,
       parentWikiToken
     );
+    await ensureRemoteTitle(spaceId, token, newDocId, markdown).catch((err) => {
+      console.warn(`[rename] failed to set remote title for ${fileRel}: ${err.message || err}`);
+    });
     const meta = await fetchDocumentMeta(newDocId, token);
     manifestDocs[newDocId] = {
       file: fileRel,
@@ -753,6 +768,9 @@ async function main() {
       markdown,
       parentWikiToken
     );
+    await ensureRemoteTitle(spaceId, token, newDocId, markdown).catch((err) => {
+      console.warn(`[rename] failed to set remote title for ${fileRel}: ${err.message || err}`);
+    });
     const meta = await fetchDocumentMeta(newDocId, token);
     manifestDocs[newDocId] = {
       file: fileRel,
