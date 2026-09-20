@@ -18,7 +18,7 @@
 set -e
 
 # Navigate to the script's directory (portable)
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/../.."
 
 # Check node
 if ! command -v node &> /dev/null; then

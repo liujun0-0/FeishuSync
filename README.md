@@ -163,25 +163,25 @@ npm run sync:bidirectional
 
 ```powershell
 shell:startup
-Copy-Item "_autostart_watchdog.cmd" "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\"
+Copy-Item "ops/startup/_autostart_watchdog.cmd" "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\"
 ```
 
 **macOS：**
 
 ```bash
-chmod +x _autostart_watchdog.sh
-cp _autostart_watchdog.sh ~/Library/LaunchAgents/feishu-sync-watchdog.sh
+chmod +x ops/startup/_autostart_watchdog.sh
+cp ops/startup/_autostart_watchdog.sh ~/Library/LaunchAgents/feishu-sync-watchdog.sh
 ```
 
 **Linux：**
 
 ```bash
-chmod +x _autostart_watchdog.sh
+chmod +x ops/startup/_autostart_watchdog.sh
 # 方式 1：手动
-./_autostart_watchdog.sh
+./ops/startup/_autostart_watchdog.sh
 
 # 方式 2：systemd（推荐）
-cp feishu-sync-watchdog.service ~/.config/systemd/user/
+cp ops/startup/feishu-sync-watchdog.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now feishu-sync-watchdog
 ```
@@ -272,9 +272,9 @@ FeishuSync/
 │   └── cleanup-stubs.mjs    ← 幽灵副本清理工具
 ├── index.js                 ← start/stop 入口
 ├── package.json
-├── _autostart_watchdog.cmd  ← Windows 开机自启
-├── _autostart_watchdog.sh   ← Linux/macOS 开机自启
-└── feishu-sync-watchdog.service  ← systemd 用户服务
+├── ops/startup/             ← 各平台开机自启入口
+├── tools/diagnostics/       ← 一次性诊断脚本
+└── archive/                 ← 历史备份与快照（不参与运行）
 ```
 
 ## 幽灵副本防护

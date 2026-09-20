@@ -14,7 +14,7 @@ Set fso = CreateObject("Scripting.FileSystemObject")
 
 ' Get the directory where this VBS file lives
 scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)
-scriptPath = fso.BuildPath(scriptDir, "_autostart_watchdog.cmd")
+scriptPath = fso.BuildPath(fso.GetAbsolutePathName(fso.BuildPath(scriptDir, "..\..")), "_autostart_watchdog.cmd")
 
 ' Run the .cmd silently (window hidden, don't wait for completion)
 shell.Run """" & scriptPath & """", 0, False

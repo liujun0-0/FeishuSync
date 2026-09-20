@@ -162,3 +162,7 @@ vite.config.ts.timestamp-*
 
 # FeishuSync auth URL (generated at runtime)
 feishu-auth-url.txt
+
+# Archived snapshots and local cleanup artifacts
+archive/
+
