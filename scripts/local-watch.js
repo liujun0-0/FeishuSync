@@ -43,6 +43,20 @@ let pumping = false;
 const retries = new Map();
 const workerScript = path.join(ROOT, 'scripts', 'local-upload-worker.js');
 
+async function collectLocalMarkdownFiles(dir, out = []) {
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.name === '.feishu-sync-soft-trash' || entry.name.startsWith('.')) continue;
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      await collectLocalMarkdownFiles(fullPath, out);
+    } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
+      out.push(fullPath);
+    }
+  }
+  return out;
+}
+
 function enqueue(fileRel) {
   if (!fileRel || !shouldSyncLocalPath(fileRel, MANIFEST)) return;
   const rel = fileRel.replaceAll('\\', '/');
@@ -171,6 +185,32 @@ startLocalWatcher(rootDir, {
   onChange: enqueue,
   localIgnoreWindowMs: 5000,
   manifestName: MANIFEST,
+});
+
+// A file can be created while the watcher is stopped or restarting. Windows'
+// fs.watch cannot replay those historical events, so reconcile untracked local
+// Markdown files once at startup. Existing tracked files are left alone; the
+// upload worker performs its normal hash/remote checks and skips unchanged docs.
+async function reconcileUntrackedLocalFiles() {
+  const stateNow = await loadState(rootDir, MANIFEST);
+  const localFiles = await collectLocalMarkdownFiles(rootDir);
+  let queued = 0;
+  for (const absPath of localFiles) {
+    const rel = path.relative(rootDir, absPath).replaceAll('\\', '/');
+    if (!shouldSyncLocalPath(rel, MANIFEST)) continue;
+    if (findDocIdByFile(stateNow.docs || {}, rel)) continue;
+    enqueue(rel);
+    queued += 1;
+  }
+  if (queued > 0) {
+    console.log(`[local-watch] startup reconciliation queued ${queued} untracked local file(s)`);
+  } else {
+    console.log('[local-watch] startup reconciliation complete; no untracked local files');
+  }
+}
+
+reconcileUntrackedLocalFiles().catch((err) => {
+  console.error(`[local-watch] startup reconciliation failed: ${err.message || err}`);
 });
 
 setInterval(() => {
