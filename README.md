@@ -157,6 +157,14 @@ npm run sync:bidirectional
 
 也可以在 `config.json` 中设置全局单向模式：`sync.mode` 支持 `local-to-remote`（默认）、`remote-to-local` 或 `bidirectional`。其中 `remote-to-local` 只下载线上变更，不监听本地上传；文档级 `documentPolicies` 可进一步覆盖单个文档的策略。
 
+交互式启动器：
+
+- Windows：双击 `ops/launcher/feishusync.bat`
+- Linux/macOS：执行 `chmod +x ops/launcher/feishusync.sh && ./ops/launcher/feishusync.sh`
+
+启动器通过序号提供启动、停止、状态检查、单次同步、认证和测试；
+`ops/startup/` 目录中的脚本只用于系统开机自启。
+
 ### 6. 开机自启
 
 **Windows：**
