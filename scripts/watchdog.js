@@ -1,5 +1,5 @@
 import fs from 'node:fs/promises';
-import { createWriteStream } from 'node:fs';
+import { openSync, closeSync } from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -108,15 +108,17 @@ async function tokenFileReady(tokenPath, timeoutMs) {
 
 async function spawnChild(spec, tokenPath) {
   await rotateLog(spec.log);
-  const logStream = createWriteStream(spec.log, { flags: 'a' });
+  const logFd = openSync(spec.log, 'a');
   const child = spawn(process.execPath, [spec.script], {
     cwd: ROOT,
     env: process.env,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    // Directly attach child output to the already-open log file. On Windows,
+    // piping stdout/stderr through the watchdog can fail with EPERM when the
+    // process is launched from a startup/background context.
+    stdio: ['ignore', logFd, logFd],
+    windowsHide: true,
   });
-  child.stdout.on('data', (d) => logStream.write(d));
-  child.stderr.on('data', (d) => logStream.write(d));
-  children.set(spec.name, { spec, child, logStream });
+  children.set(spec.name, { spec, child, logFd });
   // Write the same pid files index.js uses, so `node index.js stop` works.
   writePid(PID_FOR[spec.name], child.pid).then(() => {
     log(`[${spec.name}] pid file written (${child.pid})`);
@@ -128,7 +130,7 @@ async function spawnChild(spec, tokenPath) {
 
   child.on('exit', (code, signal) => {
     clearTimeout(healthyTimer);
-    logStream.end();
+    closeSync(logFd);
     children.delete(spec.name);
     removePid(PID_FOR[spec.name]);
     if (shuttingDown) {
