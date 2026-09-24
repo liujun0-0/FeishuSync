@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { readConfig, requireConfigValue, resolvePath } from '../config.js';
 import {
   readToken,
@@ -215,7 +216,9 @@ export async function main() {
   await saveState(syncRoot, state, '.feishu-sync.json');
 }
 
-if (import.meta.url === `file://${process.argv[1].replaceAll('\\', '/')}`) {
+// Windows may expose argv[1] with a drive-letter path and different slash
+// casing, so compare normalized filesystem paths instead of string URLs.
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
   main().catch((err) => {
     console.error(err.message || err);
     process.exit(1);
