@@ -2,6 +2,7 @@ import http from 'node:http';
 import { URL } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { readFileSync, unlinkSync } from 'node:fs';
 import { exec } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readConfig, requireConfigValue, resolvePath } from '../config.js';
@@ -16,6 +17,7 @@ const TOKEN_URL = 'https://open.feishu.cn/open-apis/authen/v2/oauth/token';
 const TENANT_TOKEN_URL = 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal';
 const AUTH_URL_FILE = path.join(ROOT, 'feishu-auth-url.txt');
 const REFRESH_TOKEN_FILE = path.join(ROOT, '.feishu-sync-refresh-token');
+const AUTH_PID_FILE = path.join(ROOT, '.feishu-sync-auth.pid');
 const TOKEN_REQUEST_TIMEOUT_MS = 30_000;
 
 let pendingCodeResolve = null;
@@ -37,12 +39,20 @@ function openInBrowser(url) {
   } else {
     cmd = `xdg-open "${url}"`;
   }
-  exec(cmd, (err) => {
-    if (err) {
-      console.log('Could not auto-open browser. Open this URL manually:');
-      console.log(url);
-    }
-  });
+  // Browser launch is only a convenience. On managed Windows hosts the
+  // child-process spawn can throw synchronously (EPERM); that must not abort
+  // the OAuth listener before it starts waiting for the localhost callback.
+  try {
+    exec(cmd, (err) => {
+      if (err) {
+        console.log('Could not auto-open browser. Open this URL manually:');
+        console.log(url);
+      }
+    });
+  } catch (err) {
+    console.log('Could not auto-open browser. Open this URL manually:');
+    console.log(url);
+  }
 }
 
 function createServer() {
@@ -109,6 +119,40 @@ function buildAuthUrl(clientId) {
 }
 
 const AUTH_TIMEOUT_MS = 5 * 60 * 1000; // 5 分钟超时——用户关了浏览器没授权也不会永远卡住
+
+async function acquireAuthPid() {
+  let previousPid = null;
+  try {
+    const raw = await fs.readFile(AUTH_PID_FILE, 'utf8');
+    const parsed = Number(raw.trim());
+    if (Number.isInteger(parsed) && parsed > 0 && parsed !== process.pid) previousPid = parsed;
+  } catch (err) {
+    if (err?.code !== 'ENOENT') console.warn(`[auth] failed reading old pid: ${err.message || err}`);
+  }
+
+  if (previousPid) {
+    try {
+      process.kill(previousPid, 0);
+      process.kill(previousPid, 'SIGTERM');
+      console.log(`[auth] stopped previous auth process (pid ${previousPid})`);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    } catch (err) {
+      // ESRCH means the pid file was stale; any other failure is non-fatal and
+      // the listen() call below will still provide the definitive port check.
+      if (err?.code !== 'ESRCH') console.warn(`[auth] failed stopping previous auth process: ${err.message || err}`);
+    }
+  }
+  await fs.writeFile(AUTH_PID_FILE, `${process.pid}\n`, 'utf8');
+}
+
+function releaseAuthPid() {
+  try {
+    const raw = readFileSync(AUTH_PID_FILE, 'utf8').trim();
+    if (raw === String(process.pid)) unlinkSync(AUTH_PID_FILE);
+  } catch {
+    // Best effort cleanup; the next auth start repairs stale state.
+  }
+}
 
 class TokenRequestError extends Error {
   constructor(message, code) {
@@ -255,6 +299,10 @@ async function main() {
   const authMode = config.auth?.mode || 'user';
   const tokenPath = resolvePath(requireConfigValue(config, 'tokenPath'));
 
+  // Enforce one auth owner before touching port 7777. This repairs stale PID
+  // files left by crashes and prevents watchdog/manual starts from racing.
+  await acquireAuthPid();
+
   if (authMode === 'tenant') {
     console.log('[auth] 使用应用身份模式（tenant_access_token），无需浏览器授权。');
     while (!shuttingDown) {
@@ -379,6 +427,8 @@ async function main() {
     }
   }
 }
+
+process.on('exit', releaseAuthPid);
 
 // Global error handlers — prevent V8/libuv assertion crashes from killing the
 // auth process during token refresh or browser callback handling.
