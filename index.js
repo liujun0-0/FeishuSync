@@ -10,6 +10,7 @@ const __dirname = path.dirname(__filename);
 
 const AUTH_PID = path.join(__dirname, '.feishu-sync-auth.pid');
 const SYNC_PID = path.join(__dirname, '.feishu-sync.pid');
+const WATCHDOG_PID = path.join(__dirname, '.feishu-sync-watchdog.pid');
 
 function isProcessAlive(pid) {
   if (!pid) return false;
@@ -45,9 +46,21 @@ async function removePid(pidPath) {
 }
 
 function spawnDetached(nodeArgs) {
+  if (process.platform === 'win32') {
+    // `detached: true` alone can still leave descendants attached to the
+    // terminal/job object used to launch npm. The Windows `start` command
+    // creates an independent process that survives the caller.
+    return spawn('cmd.exe', ['/d', '/c', 'start', '""', process.execPath, ...nodeArgs], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      env: process.env,
+    });
+  }
   const child = spawn(process.execPath, nodeArgs, {
     detached: true,
     stdio: 'ignore',
+    windowsHide: true,
     env: process.env,
   });
   child.unref();
@@ -71,34 +84,22 @@ async function waitForToken(tokenPath) {
 }
 
 async function start() {
-  const config = await readConfig();
-  const tokenPath = resolvePath(requireConfigValue(config, 'tokenPath'));
-
-  const authPid = await readPid(AUTH_PID);
-  if (authPid && isProcessAlive(authPid)) {
-    console.log(`[start] auth already running (pid ${authPid})`);
-  } else {
-    if (authPid) await removePid(AUTH_PID);
-    const authScript = path.join(__dirname, 'scripts', 'auth.js');
-    const child = spawnDetached([authScript]);
-    await writePid(AUTH_PID, child.pid);
-    console.log(`[start] auth started (pid ${child.pid})`);
-  }
-
-  const syncPid = await readPid(SYNC_PID);
-  if (syncPid && isProcessAlive(syncPid)) {
-    console.log(`[start] sync already running (pid ${syncPid})`);
+  const watchdogPid = await readPid(WATCHDOG_PID);
+  if (watchdogPid && isProcessAlive(watchdogPid)) {
+    console.log(`[start] watchdog already running (pid ${watchdogPid})`);
     return;
   }
-  if (syncPid) await removePid(SYNC_PID);
+  if (watchdogPid) await removePid(WATCHDOG_PID);
 
-  console.log('[start] waiting for token file...');
-  await waitForToken(tokenPath);
-
-  const syncScript = path.join(__dirname, 'scripts', 'sync.js');
-  const syncChild = spawnDetached([syncScript]);
-  await writePid(SYNC_PID, syncChild.pid);
-  console.log(`[start] sync started (pid ${syncChild.pid})`);
+  // The watchdog is the single owner of auth and sync. Starting those
+  // children directly leaves them orphaned when one exits or the shell closes.
+  const watchdogScript = path.join(__dirname, 'scripts', 'watchdog.js');
+  spawnDetached([watchdogScript]);
+  // The Windows `start` wrapper has its own short-lived PID; watchdog writes
+  // the authoritative PID once its server is initialized.
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const actualPid = await readPid(WATCHDOG_PID);
+  console.log(`[start] watchdog started${actualPid ? ` (pid ${actualPid})` : ''}; it will supervise auth and sync`);
 }
 
 async function stop() {

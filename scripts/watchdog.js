@@ -35,12 +35,14 @@ const CHILDREN = [
 
 let shuttingDown = false;
 const children = new Map();
+const pendingStarts = new Set();
 // Per-child restart backoff. Prevents auth EADDRINUSE (or rapid sync crashes)
 // from spinning every 3s forever and flooding logs.
 const restartAttempts = new Map();
 const RESTART_BASE_MS = 3000;
 const RESTART_MAX_MS = 60_000;
 const RESTART_RESET_AFTER_MS = 60_000;
+const HEALTH_CHECK_MS = 15_000;
 
 function nextRestartDelay(name) {
   const attempt = (restartAttempts.get(name) || 0) + 1;
@@ -137,10 +139,12 @@ async function spawnChild(spec, tokenPath) {
       log(`[${spec.name}] exited (code ${code}, signal ${signal}); shutdown in progress, not restarting`);
       return;
     }
-    // Clean exit (e.g. auth EADDRINUSE → exit 0) — do not restart.
+    // A child exiting cleanly is still unexpected while the watchdog is
+    // active (auth can exit after a port race; sync can exit after a handled
+    // shutdown). Restart it so one transient exit cannot leave an orphaned
+    // or partially working installation.
     if (code === 0 && !signal) {
-      log(`[${spec.name}] exited cleanly (code 0); not restarting`);
-      return;
+      log(`[${spec.name}] exited cleanly (code 0); restarting under watchdog`);
     }
     // Survived long enough → treat next crash as fresh.
     if (Date.now() - startedAt >= RESTART_RESET_AFTER_MS) {
@@ -157,21 +161,27 @@ async function spawnChild(spec, tokenPath) {
 
 async function startChild(spec, tokenPath) {
   if (shuttingDown) return;
+  if (pendingStarts.has(spec.name)) return;
   const holder = children.get(spec.name);
   if (holder && isProcessAlive(holder.child.pid)) {
     log(`[${spec.name}] already running (pid ${holder.child.pid})`);
     return;
   }
-  if (spec.waitForToken) {
-    const ready = await tokenFileReady(tokenPath, 120_000);
-    if (!ready) {
-      log(`[${spec.name}] token file not ready after 120s; waiting 10s and retrying`);
-      setTimeout(() => startChild(spec, tokenPath), 10_000);
-      return;
+  pendingStarts.add(spec.name);
+  try {
+    if (spec.waitForToken) {
+      const ready = await tokenFileReady(tokenPath, 120_000);
+      if (!ready) {
+        log(`[${spec.name}] token file not ready after 120s; waiting 10s and retrying`);
+        setTimeout(() => startChild(spec, tokenPath), 10_000);
+        return;
+      }
+      log(`[${spec.name}] token file ready`);
     }
-    log(`[${spec.name}] token file ready`);
+    spawnChild(spec, tokenPath);
+  } finally {
+    pendingStarts.delete(spec.name);
   }
-  spawnChild(spec, tokenPath);
 }
 
 async function start() {
@@ -194,9 +204,20 @@ async function start() {
     await startChild(spec, tokenPath);
   }
 
+  // Defensive health sweep: catches a child that disappeared without an
+  // exit event (or whose PID file was replaced by a stale manual start).
+  const healthTimer = setInterval(() => {
+    for (const spec of CHILDREN) {
+      const holder = children.get(spec.name);
+      if (!holder || !isProcessAlive(holder.child.pid)) startChild(spec, tokenPath);
+    }
+  }, HEALTH_CHECK_MS);
+  healthTimer.unref?.();
+
   const shutdown = async (signal) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    clearInterval(healthTimer);
     log(`[watchdog] received ${signal}; stopping children`);
     for (const { spec, child } of children.values()) {
       try {
